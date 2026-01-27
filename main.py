@@ -830,11 +830,31 @@ async def ud(interaction: discord.Interaction, target: discord.Member):
     try:
         if interaction.user.id != OWNER_ID:
             return await interaction.followup.send("Owner only", ephemeral=True)
+        
+        user_id = str(target.id)
+        
+        # Fetch MongoDB data
+        user_doc = safe_find_one(users_coll, {"_id": user_id})
+        data = user_doc.get("data", {}) if user_doc else {}
+        
+        # Get in-memory activity logs
         logs = "\n".join(user_activity[target.id] or ["No logs"])
+        
         embed = discord.Embed(title=f"🕵️ {target}", color=0x0099ff)
         embed.add_field(name="ID", value=target.id)
         embed.add_field(name="Joined", value=target.joined_at.strftime("%d/%m/%Y %H:%M") if target.joined_at else "Unknown")
+        
+        # Voice & Cam Stats
+        cam_on = data.get("voice_cam_on_minutes", 0)
+        cam_off = data.get("voice_cam_off_minutes", 0)
+        messages = data.get("message_count", 0)
+        
+        stats_text = f"🎤 Cam ON: {format_time(cam_on)}\n❌ Cam OFF: {format_time(cam_off)}\n💬 Messages: {messages}"
+        embed.add_field(name="📊 Stats", value=stats_text, inline=False)
+        
+        # Recent Activity
         embed.add_field(name="Recent Activity", value=f"```{logs}```", inline=False)
+        
         await interaction.followup.send(embed=embed, ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
@@ -936,6 +956,19 @@ async def on_message(message: discord.Message):
     if message.guild and message.guild.id != GUILD_ID or message.author.bot:
         return
     now = time.time()
+    
+    # Track message activity in MongoDB
+    if message.guild and message.guild.id == GUILD_ID:
+        user_id = str(message.author.id)
+        try:
+            safe_update_one(users_coll, {"_id": user_id}, {
+                "$inc": {"data.message_count": 1},
+                "$setOnInsert": {"data": {"voice_cam_on_minutes": 0, "voice_cam_off_minutes": 0, "message_count": 0, "yesterday": {"cam_on": 0, "cam_off": 0}}}
+            })
+            track_activity(message.author.id, f"Message in #{message.channel.name}: {message.content[:50]}")
+        except:
+            pass
+    
     # 1. Anti-Spam
     spam_cache[message.author.id].append(now)
     spam_cache[message.author.id] = [t for t in spam_cache[message.author.id] if now - t < SPAM_WINDOW]
