@@ -271,16 +271,25 @@ async def ylb(interaction: discord.Interaction):
 
 @tree.command(name="mystatus", description="Your personal VC + cam stats", guild=GUILD)
 async def mystatus(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
     doc = users_coll.find_one({"_id": str(interaction.user.id)})
     if not doc or "data" not in doc:
-        return await interaction.response.send_message("No stats yet.", ephemeral=True)
+        return await interaction.followup.send("No stats yet.")
+
     data = doc["data"]
     total = data.get("voice_cam_on_minutes", 0) + data.get("voice_cam_off_minutes", 0)
-    embed = discord.Embed(title=f"📊 Stats for {interaction.user.name}", color=0x9932CC)
-    embed.add_field(name="Total", value=format_time(total), inline=True)
-    embed.add_field(name="Cam On", value=format_time(data.get("voice_cam_on_minutes", 0)), inline=True)
-    embed.add_field(name="Cam Off", value=format_time(data.get("voice_cam_off_minutes", 0)), inline=True)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    embed = discord.Embed(
+        title=f"📊 Stats for {interaction.user.name}",
+        color=0x9932CC
+    )
+    embed.add_field(name="Total", value=format_time(total))
+    embed.add_field(name="Cam On", value=format_time(data.get("voice_cam_on_minutes", 0)))
+    embed.add_field(name="Cam Off", value=format_time(data.get("voice_cam_off_minutes", 0)))
+
+    await interaction.followup.send(embed=embed)
+
 
 @tree.command(name="yst", description="Your yesterday’s stats", guild=GUILD)
 async def yst(interaction: discord.Interaction):
