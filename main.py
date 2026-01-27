@@ -37,8 +37,14 @@ ROLE_TO_REMOVE_AFTER_5DAYS = 1458400797133115474
 PORT = int(os.getenv("PORT", 3000))
 
 # ==================== DATABASE (MongoDB Atlas) ====================
-client = MongoClient(MONGODB_URI)
+client = MongoClient(
+    MONGO_URI,
+    serverSelectionTimeoutMS=30000,
+    tls=True
+)
+
 db = client["legend_star"]
+print("✅ MongoDB connected")
   # uses database name from URI
 
 users_coll = db["users"]           # study time
