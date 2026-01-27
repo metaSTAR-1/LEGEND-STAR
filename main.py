@@ -78,15 +78,31 @@ VC_ABUSE_THRESHOLD = 5
 VC_ABUSE_WINDOW = 30
 
 # MongoDB
-client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=30000, tls=True)
-db = client["legend_star"]
-users_coll = db["users"]
-todo_coll = db["todo_timestamps"]
-redlist_coll = db["redlist"]
-active_members_coll = db["active_members"]
-users_coll.create_index("data.voice_cam_on_minutes")
-users_coll.create_index("data.voice_cam_off_minutes")
-print("✅ MongoDB connected")
+try:
+    client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=30000, tls=True, retryWrites=False)
+    db = client["legend_star"]
+    users_coll = db["users"]
+    todo_coll = db["todo_timestamps"]
+    redlist_coll = db["redlist"]
+    active_members_coll = db["active_members"]
+    print("✅ MongoDB connected (indexes will be created on first ready)")
+except Exception as e:
+    print(f"⚠️ MongoDB connection warning: {e}")
+    # Create collections anyway for later use
+    db = client["legend_star"]
+    users_coll = db["users"]
+    todo_coll = db["todo_timestamps"]
+    redlist_coll = db["redlist"]
+    active_members_coll = db["active_members"]
+
+# Function to safely create indexes
+async def create_indexes_async():
+    try:
+        users_coll.create_index("data.voice_cam_on_minutes")
+        users_coll.create_index("data.voice_cam_off_minutes")
+        print("✅ MongoDB indexes created")
+    except Exception as e:
+        print(f"⚠️ Index creation failed (non-critical): {e}")
 
 
 intents = discord.Intents.all()
@@ -860,6 +876,10 @@ async def on_ready():
     print(f"Bot ID: {bot.user.id}")
     print(f"GUILD_ID: {GUILD_ID}")
     print(f"Commands in tree before sync: {[c.name for c in tree.get_commands(guild=GUILD if GUILD_ID > 0 else None)]}")
+    
+    # Create indexes on first ready
+    await create_indexes_async()
+    
     try:
         if GUILD_ID > 0:
             print(f"Syncing to guild: {GUILD_ID}")
