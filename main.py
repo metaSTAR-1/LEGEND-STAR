@@ -622,6 +622,7 @@ async def batch_save_study():
         
         # ✅ SECOND: Also save ALL members currently in any voice channel (fallback tracking)
         # This ensures users who joined before bot started are still tracked
+        newly_registered = []  # Track newly registered users
         for channel in guild.voice_channels:
             for member in channel.members:
                 if member.bot or member.id in processed:
@@ -631,7 +632,7 @@ async def batch_save_study():
                 if member.id not in vc_join_times:
                     vc_join_times[member.id] = now
                     mins = 0  # Just initialized, don't save time yet
-                    print(f"🔄 {member.display_name}: Registered (was not being tracked)")
+                    newly_registered.append(member.display_name)  # Add to list instead of printing
                 else:
                     mins = int((now - vc_join_times[member.id]) // 60)
                 
@@ -657,6 +658,10 @@ async def batch_save_study():
                         print(f"⏱️ {member.display_name}: +{mins}m {field} (Cam: {cam}) ✅")
                         saved_count += 1
                     vc_join_times[member.id] = now
+        
+        # Print consolidated registration message (only ONE message)
+        if newly_registered:
+            print(f"🔄 Registered ({len(newly_registered)} new): {', '.join(newly_registered)}")
         
         if saved_count > 0:
             print(f"📊 Batch save complete: Updated {saved_count} active members in voice")
