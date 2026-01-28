@@ -1010,6 +1010,7 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
             print(f"⏸️ [TODO] Saving to database...")
             safe_update_one(todo_coll, {"_id": uid}, {"$set": {
                 "last_submit": time.time(),
+                "last_ping": 0,  # 🔥 RESET PING TIMER when user submits - No more pings!
                 "todo": {
                     "name": self.name.value,
                     "date": self.date.value,
@@ -1018,7 +1019,7 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
                     "dont_do": self.dont_do.value or "N/A"
                 }
             }})
-            print(f"✅ [TODO] Database save complete")
+            print(f"✅ [TODO] Database save complete - Ping timer RESET!")
             
             # Create the embed
             print(f"🎨 [TODO] Creating embed...")
@@ -1100,6 +1101,7 @@ class AtodoModal(TodoModal):
             print(f"⏸️ [ATODO] Saving to database...")
             safe_update_one(todo_coll, {"_id": uid}, {"$set": {
                 "last_submit": time.time(),
+                "last_ping": 0,  # 🔥 RESET PING TIMER when owner submits - No more pings!
                 "todo": {
                     "name": self.name.value,
                     "date": self.date.value,
@@ -1108,7 +1110,7 @@ class AtodoModal(TodoModal):
                     "dont_do": self.dont_do.value or "N/A"
                 }
             }})
-            print(f"✅ [ATODO] Database save complete")
+            print(f"✅ [ATODO] Database save complete - Ping timer RESET!")
             
             # Create the embed
             print(f"🎨 [ATODO] Creating embed...")
@@ -1172,69 +1174,180 @@ async def atodo(interaction: discord.Interaction, user: discord.Member):
         return await interaction.response.send_message("Owner only", ephemeral=True)
     await interaction.response.send_modal(AtodoModal(user))
 
-@tasks.loop(hours=1)
+@tasks.loop(hours=3)
 async def todo_checker():
-    """Ping users every 5 hours if they haven't submitted a TODO"""
+    """
+    🔥 ADVANCED TODO PING SYSTEM 🔥
+    
+    - Monitors all users with TODO role
+    - If user participates but doesn't share TODO in last 24 hours → PING every 3 hours
+    - Ping only happens ONCE per 3-hour cycle (not spam)
+    - Auto-reset ping timer when user shares /todo or /atodo
+    - Removes role after 5 days of inactivity
+    
+    MongoDB Schema:
+    {
+        "_id": "user_id",
+        "last_submit": timestamp,
+        "last_ping": timestamp,  // NEW: Track last ping to avoid spam
+        "todo": {...}
+    }
+    """
     if GUILD_ID <= 0:
         return
+    
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         return
+    
     channel = guild.get_channel(TODO_CHANNEL_ID)
     if not channel:
         return
     
     now = time.time()
-    five_hours = 5 * 3600
-    one_day = 24 * 3600
-    five_days = 5 * 86400
+    one_day = 24 * 3600       # 24 hours
+    five_days = 5 * 86400     # 5 days for role removal
+    three_hours = 3 * 3600    # 3 hours between pings
+    
+    print(f"\n⏰ [TODO_CHECKER] Running advanced TODO verification @ {datetime.datetime.now(KOLKATA).strftime('%H:%M:%S')}")
     
     for doc in safe_find(todo_coll, {}):
         try:
             uid = int(doc["_id"])
             last_submit = doc.get("last_submit", 0)
-            elapsed = now - last_submit
+            last_ping = doc.get("last_ping", 0)  # NEW: Track ping history
+            elapsed_since_submit = now - last_submit
+            elapsed_since_ping = now - last_ping
+            
             member = guild.get_member(uid)
             
+            # Skip bots and offline members
             if not member or member.bot:
+                print(f"⏭️  [TODO_CHECKER] Skipped {uid} (bot/offline)")
                 continue
             
-            # If user hasn't submitted in 5 days, remove role
-            if elapsed >= five_days:
+            # ============================================================
+            # LEVEL 1: Check for 5-day inactivity (REMOVE ROLE)
+            # ============================================================
+            if elapsed_since_submit >= five_days:
+                print(f"🔴 [TODO_CHECKER] {member.display_name} inactive for 5+ days")
                 role = guild.get_role(ROLE_ID)
                 if role and role in member.roles:
                     try:
                         await member.remove_roles(role)
-                        print(f"🔴 Removed role from {member.display_name} (5 days inactive)")
-                        await channel.send(f"🔴 {member.mention} **Role Removed** - No TODO for 5 days")
-                    except:
-                        pass
+                        print(f"✅ Removed role from {member.display_name}")
+                        
+                        # Notify in channel
+                        embed = discord.Embed(
+                            title="❌ TODO Role Removed",
+                            description=f"{member.mention} has been inactive for **5+ days**",
+                            color=discord.Color.red()
+                        )
+                        embed.add_field(name="Action", value="Role removed. Use /todo to rejoin.", inline=False)
+                        await channel.send(embed=embed)
+                        
+                    except Exception as e:
+                        print(f"⚠️ Failed to remove role: {e}")
             
-            # If user hasn't submitted in 5 hours, ping them
-            elif elapsed >= five_hours:
-                hours = int(elapsed // 3600)
-                days = int(elapsed // 86400)
+            # ============================================================
+            # LEVEL 2: Check for 24-hour inactivity (PING - But only once per 3 hours!)
+            # ============================================================
+            elif elapsed_since_submit >= one_day:
+                # Check if we've already pinged in the last 3 hours
+                if elapsed_since_ping < three_hours:
+                    # Already pinged recently, skip
+                    hours_until_next_ping = int((three_hours - elapsed_since_ping) / 3600) + 1
+                    print(f"⏭️  [TODO_CHECKER] {member.display_name} already pinged ({hours_until_next_ping}h until next)")
+                    continue
                 
-                # Format elapsed time
-                if days > 0:
-                    time_str = f"{days}d {hours % 24}h"
-                else:
-                    time_str = f"{hours}h"
+                # ✅ IT'S TIME TO PING!
+                days_inactive = int(elapsed_since_submit // 86400)
+                hours_inactive = int((elapsed_since_submit % 86400) // 3600)
+                time_str = f"{days_inactive}d {hours_inactive}h" if days_inactive > 0 else f"{hours_inactive}h"
                 
-                # Ping user to submit TODO
-                ping_msg = f"⏰ {member.mention} **TODO Reminder!** Last submitted: {time_str} ago"
+                print(f"📢 [TODO_CHECKER] PINGING {member.display_name} (inactive for {time_str})")
+                
+                # ============================================================
+                # 🎯 SMART PING: Channel + DM (Redundant Coverage)
+                # ============================================================
+                
+                # Channel Ping (Public Accountability)
+                channel_embed = discord.Embed(
+                    title="⏰ TODO Reminder!",
+                    description=f"{member.mention}",
+                    color=discord.Color.gold()
+                )
+                channel_embed.add_field(
+                    name="📊 Status",
+                    value=f"Last submitted: **{time_str} ago**",
+                    inline=False
+                )
+                channel_embed.add_field(
+                    name="📝 Action Required",
+                    value="Please share `/todo` to update your daily task list",
+                    inline=False
+                )
+                channel_embed.add_field(
+                    name="⚠️ Note",
+                    value="This reminder runs every 3 hours until you submit",
+                    inline=False
+                )
+                
                 try:
-                    await channel.send(ping_msg)
-                except:
-                    pass
+                    await channel.send(embed=channel_embed)
+                    print(f"✅ Channel ping sent to {member.display_name}")
+                except Exception as e:
+                    print(f"⚠️ Failed to send channel ping: {e}")
                 
-                # Try to DM user as well
+                # DM Ping (Direct Notification)
+                dm_embed = discord.Embed(
+                    title="🔔 TODO Reminder - Direct Message",
+                    description="You haven't submitted your TODO in the last 24 hours!",
+                    color=discord.Color.orange()
+                )
+                dm_embed.add_field(
+                    name="⏱️ Time Since Last Submit",
+                    value=f"**{time_str}** ago",
+                    inline=False
+                )
+                dm_embed.add_field(
+                    name="📝 What to do?",
+                    value="Use `/todo` command to submit your daily task list",
+                    inline=False
+                )
+                dm_embed.add_field(
+                    name="🔄 Ping Frequency",
+                    value="You'll receive this reminder every 3 hours until you submit",
+                    inline=False
+                )
+                dm_embed.set_footer(text="Keep up with your daily TODOs! 💪")
+                
                 try:
-                    await member.send(f"⏰ **TODO Reminder!** Please submit your daily TODO. Last submitted: {time_str} ago")
-                except:
-                    pass
+                    await member.send(embed=dm_embed)
+                    print(f"✅ DM sent to {member.display_name}")
+                except Exception as e:
+                    print(f"⚠️ Failed to DM {member.display_name}: {e}")
+                
+                # ============================================================
+                # 💾 UPDATE DATABASE: Record this ping time
+                # ============================================================
+                print(f"💾 [TODO_CHECKER] Updating last_ping timestamp for {member.display_name}")
+                safe_update_one(todo_coll, {"_id": str(uid)}, {
+                    "$set": {
+                        "last_ping": now  # Record when we pinged them
+                    }
+                })
+                print(f"✅ Database updated - next ping in 3 hours")
+                
+            else:
+                # User is within 24-hour limit, no action needed
+                hours_safe = int(elapsed_since_submit / 3600)
+                print(f"✅ [TODO_CHECKER] {member.display_name} OK ({hours_safe}h submitted)")
+        
+        except ValueError:
+            print(f"⚠️ todo_checker skipped invalid UID: {doc['_id']}")
         except Exception as e:
-            print(f"⚠️ todo_checker error for user: {str(e)[:100]}")
+            print(f"⚠️ todo_checker error for user {doc.get('_id', '?')}: {str(e)[:100]}")
 
 @tree.command(name="listtodo", description="View your current todo", guild=GUILD)
 async def listtodo(interaction: discord.Interaction):
