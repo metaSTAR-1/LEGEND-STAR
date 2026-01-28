@@ -324,6 +324,7 @@ async def engage_lockdown(guild, reason):
     perms = role.permissions
     perms.send_messages = False
     perms.connect = False
+    perms.speak = False
     
     try:
         await role.edit(permissions=perms, reason=f"LOCKDOWN: {reason}")
@@ -337,6 +338,7 @@ async def engage_lockdown(guild, reason):
         })
     except Exception as e:
         print(f"⚠️ Lockdown Error: {e}")
+        is_locked_down = False  # Revert on failure
 
 async def restore_channel(guild, channel_name, category_id, channel_type):
     """Auto-recovers a deleted channel"""
@@ -1856,33 +1858,47 @@ async def manual_sync(ctx):
 
 # ==================== LOCKDOWN CONTROL ====================
 @bot.command(name="all")
-async def all_ok_command(ctx, status: str = None):
+async def all_ok_command(ctx, *, status: str = None):
     """Owner only: Unlock server with !all ok"""
     if ctx.author.id != OWNER_ID:
+        await ctx.send("❌ **UNAUTHORIZED:** Only the Owner can use this command.")
         return
     
-    if status and status.lower() == "ok":
-        global is_locked_down
-        is_locked_down = False
-        
+    # Check if the message is exactly "!all ok" or "!all ok " with extra spaces
+    if not status or status.strip().lower() != "ok":
+        await ctx.send("❌ **INVALID SYNTAX:** Use `!all ok` to lift lockdown.")
+        return
+    
+    global is_locked_down
+    if not is_locked_down:
+        await ctx.send("⚠️ **STATUS:** Server is already unlocked. No action needed.")
+        return
+    
+    is_locked_down = False
+    
+    try:
+        # Restore default role permissions (allow messaging and voice)
         role = ctx.guild.default_role
         perms = role.permissions
         perms.send_messages = True
         perms.connect = True
+        perms.speak = True
         
-        try:
-            await role.edit(permissions=perms, reason="Owner Command: !all ok")
-            await ctx.send("✅ **STATUS GREEN:** Lockdown lifted. Server is back to normal.")
-            print("🟢 Lockdown lifted by Owner.")
-            
-            # Alert all admins
-            await alert_owner(ctx.guild, "LOCKDOWN LIFTED", {
-                "Status": "Server is now UNLOCKED",
-                "Action": "Performed by Owner",
-                "Time": datetime.datetime.now().strftime("%H:%M:%S")
-            })
-        except Exception as e:
-            await ctx.send(f"⚠️ Error unlocking: {e}")
+        await role.edit(permissions=perms, reason="Owner Command: !all ok - Lockdown Lifted")
+        
+        await ctx.send("✅ **STATUS GREEN:** Lockdown lifted. Server is back to normal.")
+        print("🟢 Lockdown lifted by Owner.")
+        
+        # Alert all admins
+        await alert_owner(ctx.guild, "LOCKDOWN LIFTED", {
+            "Status": "Server is now UNLOCKED",
+            "Action": "Performed by Owner",
+            "Time": datetime.datetime.now().strftime("%H:%M:%S")
+        })
+    except Exception as e:
+        is_locked_down = True  # Revert on failure
+        await ctx.send(f"⚠️ **ERROR:** Failed to lift lockdown: {e}")
+        print(f"🔴 Error lifting lockdown: {e}")
 
 # ==================== STARTUP ====================
 @bot.event
