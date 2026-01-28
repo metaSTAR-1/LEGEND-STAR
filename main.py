@@ -775,10 +775,13 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
     dont_do = discord.ui.TextInput(label="Don't Do", style=discord.TextStyle.paragraph)
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         uid = str(interaction.user.id)
         if not safe_find_one(active_members_coll, {"_id": uid}) and interaction.user.id != OWNER_ID:
-            await interaction.response.send_message("Not authorized (not in active list).", ephemeral=True)
+            await interaction.followup.send("Not authorized (not in active list).", ephemeral=True)
             return
+        
+        # Save to database
         safe_update_one(todo_coll, {"_id": uid}, {"$set": {
             "last_submit": time.time(),
             "todo": {
@@ -789,16 +792,26 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
                 "dont_do": self.dont_do.value or "N/A"
             }
         }}, upsert=True)
-        embed = discord.Embed(title="New TODO Submitted", color=discord.Color.blue())
-        embed.add_field(name="Submitted By", value=interaction.user.mention, inline=False)
-        embed.add_field(name="Date", value=self.date.value, inline=True)
-        embed.add_field(name="Name", value=self.name.value, inline=True)
-        embed.add_field(name="Must Do", value=self.must_do.value or "N/A", inline=False)
-        embed.add_field(name="Can Do", value=self.can_do.value or "N/A", inline=False)
-        embed.add_field(name="Don't Do", value=self.dont_do.value or "N/A", inline=False)
-        embed.set_footer(text="Status: Pending")
-        await interaction.channel.send(embed=embed)
-        await interaction.response.send_message("Submitted successfully!", ephemeral=True)
+        
+        # Send to TODO channel
+        guild = interaction.guild
+        if guild:
+            channel = guild.get_channel(TODO_CHANNEL_ID)
+            if channel:
+                embed = discord.Embed(title="✅ New TODO Submitted", color=discord.Color.green())
+                embed.add_field(name="👤 Submitted By", value=interaction.user.mention, inline=False)
+                embed.add_field(name="📅 Date", value=self.date.value, inline=True)
+                embed.add_field(name="📝 Name", value=self.name.value, inline=True)
+                embed.add_field(name="✔️ Must Do", value=self.must_do.value or "N/A", inline=False)
+                embed.add_field(name="🎯 Can Do", value=self.can_do.value or "N/A", inline=False)
+                embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
+                embed.set_footer(text="Status: Submitted")
+                try:
+                    await channel.send(embed=embed)
+                except Exception as e:
+                    print(f"⚠️ Failed to send TODO to channel: {str(e)[:100]}")
+        
+        await interaction.followup.send("✅ TODO submitted successfully!", ephemeral=True)
 
 @tree.command(name="todo", description="Submit your own todo", guild=GUILD)
 async def todo(interaction: discord.Interaction):
@@ -810,10 +823,13 @@ class AtodoModal(TodoModal):
         self.target = target
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         uid = str(self.target.id)
         if not safe_find_one(active_members_coll, {"_id": uid}):
-            await interaction.response.send_message("Target not in active list.", ephemeral=True)
+            await interaction.followup.send("Target not in active list.", ephemeral=True)
             return
+        
+        # Save to database (same as user submission)
         safe_update_one(todo_coll, {"_id": uid}, {"$set": {
             "last_submit": time.time(),
             "todo": {
@@ -824,15 +840,27 @@ class AtodoModal(TodoModal):
                 "dont_do": self.dont_do.value or "N/A"
             }
         }}, upsert=True)
-        embed = discord.Embed(title="New TODO (Owner Submitted)", color=discord.Color.blue())
-        embed.add_field(name="For", value=self.target.mention, inline=False)
-        embed.add_field(name="Date", value=self.date.value, inline=True)
-        embed.add_field(name="Name", value=self.name.value, inline=True)
-        embed.add_field(name="Must Do", value=self.must_do.value or "N/A", inline=False)
-        embed.add_field(name="Can Do", value=self.can_do.value or "N/A", inline=False)
-        embed.add_field(name="Don't Do", value=self.dont_do.value or "N/A", inline=False)
-        await interaction.channel.send(embed=embed)
-        await interaction.response.send_message("Submitted for user!", ephemeral=True)
+        
+        # Send to TODO channel
+        guild = interaction.guild
+        if guild:
+            channel = guild.get_channel(TODO_CHANNEL_ID)
+            if channel:
+                embed = discord.Embed(title="✅ TODO Submitted (By Owner)", color=discord.Color.gold())
+                embed.add_field(name="👤 For User", value=self.target.mention, inline=False)
+                embed.add_field(name="👨‍💼 Submitted By", value=interaction.user.mention, inline=False)
+                embed.add_field(name="📅 Date", value=self.date.value, inline=True)
+                embed.add_field(name="📝 Name", value=self.name.value, inline=True)
+                embed.add_field(name="✔️ Must Do", value=self.must_do.value or "N/A", inline=False)
+                embed.add_field(name="🎯 Can Do", value=self.can_do.value or "N/A", inline=False)
+                embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
+                embed.set_footer(text="Status: Submitted by Owner")
+                try:
+                    await channel.send(embed=embed)
+                except Exception as e:
+                    print(f"⚠️ Failed to send TODO to channel: {str(e)[:100]}")
+        
+        await interaction.followup.send(f"✅ TODO submitted for {self.target.mention}!", ephemeral=True)
 
 @tree.command(name="atodo", description="Submit todo on behalf of another user", guild=GUILD)
 @app_commands.describe(user="Target")
@@ -843,6 +871,7 @@ async def atodo(interaction: discord.Interaction, user: discord.Member):
 
 @tasks.loop(hours=1)
 async def todo_checker():
+    """Ping users every 5 hours if they haven't submitted a TODO"""
     if GUILD_ID <= 0:
         return
     guild = bot.get_guild(GUILD_ID)
@@ -851,22 +880,58 @@ async def todo_checker():
     channel = guild.get_channel(TODO_CHANNEL_ID)
     if not channel:
         return
+    
     now = time.time()
+    five_hours = 5 * 3600
+    one_day = 24 * 3600
+    five_days = 5 * 86400
+    
     for doc in safe_find(todo_coll, {}):
-        uid = int(doc["_id"])
-        last = doc.get("last_submit", 0)
-        elapsed = now - last
-        member = guild.get_member(uid)
-        if not member or member.bot:
-            continue
-        if elapsed >= 5 * 86400:
-            role = guild.get_role(ROLE_ID)
-            if role and role in member.roles:
-                await member.remove_roles(role)
-                print(f"Removed role from {uid} (5 days inactive)")
-        if elapsed >= 86400:
-            hours = int(elapsed // 3600)
-            await channel.send(f"{member.mention} ⏰ TODO Pending! Last: {hours}h ago")
+        try:
+            uid = int(doc["_id"])
+            last_submit = doc.get("last_submit", 0)
+            elapsed = now - last_submit
+            member = guild.get_member(uid)
+            
+            if not member or member.bot:
+                continue
+            
+            # If user hasn't submitted in 5 days, remove role
+            if elapsed >= five_days:
+                role = guild.get_role(ROLE_ID)
+                if role and role in member.roles:
+                    try:
+                        await member.remove_roles(role)
+                        print(f"🔴 Removed role from {member.display_name} (5 days inactive)")
+                        await channel.send(f"🔴 {member.mention} **Role Removed** - No TODO for 5 days")
+                    except:
+                        pass
+            
+            # If user hasn't submitted in 5 hours, ping them
+            elif elapsed >= five_hours:
+                hours = int(elapsed // 3600)
+                days = int(elapsed // 86400)
+                
+                # Format elapsed time
+                if days > 0:
+                    time_str = f"{days}d {hours % 24}h"
+                else:
+                    time_str = f"{hours}h"
+                
+                # Ping user to submit TODO
+                ping_msg = f"⏰ {member.mention} **TODO Reminder!** Last submitted: {time_str} ago"
+                try:
+                    await channel.send(ping_msg)
+                except:
+                    pass
+                
+                # Try to DM user as well
+                try:
+                    await member.send(f"⏰ **TODO Reminder!** Please submit your daily TODO. Last submitted: {time_str} ago")
+                except:
+                    pass
+        except Exception as e:
+            print(f"⚠️ todo_checker error for user: {str(e)[:100]}")
 
 @tree.command(name="listtodo", description="View your current todo", guild=GUILD)
 async def listtodo(interaction: discord.Interaction):
@@ -1037,32 +1102,81 @@ async def ck(interaction: discord.Interaction, user: discord.Member):
         await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="addh", description="Allow a user to use todo system", guild=GUILD)
-@app_commands.describe(userid="User ID")
+@app_commands.describe(userid="User ID (numeric)")
 async def addh(interaction: discord.Interaction, userid: str):
     await interaction.response.defer(ephemeral=True)
     try:
         if interaction.user.id != OWNER_ID:
-            return await interaction.followup.send("Owner only", ephemeral=True)
+            return await interaction.followup.send("❌ Owner only", ephemeral=True)
+        
+        # Validate user ID
         if not userid.isdigit():
-            return await interaction.followup.send("Invalid ID", ephemeral=True)
-        safe_update_one(active_members_coll, {"_id": userid}, {"$set": {"added": datetime.datetime.now(KOLKATA)}})
-        await interaction.followup.send(f"Added {userid} to active.", ephemeral=True)
+            return await interaction.followup.send("❌ Invalid ID format (must be numeric)", ephemeral=True)
+        
+        user_id = int(userid)
+        
+        # Try to get member from guild
+        guild = interaction.guild
+        member = guild.get_member(user_id) if guild else None
+        
+        # Add to active members
+        safe_update_one(active_members_coll, {"_id": userid}, {
+            "$set": {
+                "added": datetime.datetime.now(KOLKATA),
+                "name": member.display_name if member else f"User {userid}"
+            }
+        })
+        
+        member_name = member.mention if member else f"`{userid}`"
+        await interaction.followup.send(f"✅ Added {member_name} to TODO system", ephemeral=True)
+        
+        # Log to channel
+        if guild:
+            channel = guild.get_channel(TODO_CHANNEL_ID)
+            if channel:
+                try:
+                    await channel.send(f"✅ {member.mention if member else f'`{userid}`'} added to TODO system")
+                except:
+                    pass
     except Exception as e:
-        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
+        await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+        print(f"⚠️ /addh error: {str(e)}")
 
 @tree.command(name="remh", description="Remove a user from todo system", guild=GUILD)
-@app_commands.describe(userid="User ID")
+@app_commands.describe(userid="User ID (numeric)")
 async def remh(interaction: discord.Interaction, userid: str):
     await interaction.response.defer(ephemeral=True)
     try:
         if interaction.user.id != OWNER_ID:
-            return await interaction.followup.send("Owner only", ephemeral=True)
+            return await interaction.followup.send("❌ Owner only", ephemeral=True)
+        
+        # Validate user ID
         if not userid.isdigit():
-            return await interaction.followup.send("Invalid ID", ephemeral=True)
+            return await interaction.followup.send("❌ Invalid ID format (must be numeric)", ephemeral=True)
+        
+        user_id = int(userid)
+        
+        # Try to get member from guild
+        guild = interaction.guild
+        member = guild.get_member(user_id) if guild else None
+        
+        # Remove from active members
         safe_delete_one(active_members_coll, {"_id": userid})
-        await interaction.followup.send(f"Removed {userid} from active.", ephemeral=True)
+        
+        member_name = member.mention if member else f"`{userid}`"
+        await interaction.followup.send(f"✅ Removed {member_name} from TODO system", ephemeral=True)
+        
+        # Log to channel
+        if guild:
+            channel = guild.get_channel(TODO_CHANNEL_ID)
+            if channel:
+                try:
+                    await channel.send(f"❌ {member.mention if member else f'`{userid}`'} removed from TODO system")
+                except:
+                    pass
     except Exception as e:
-        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
+        await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+        print(f"⚠️ /remh error: {str(e)}")
 
 @tree.command(name="members", description="List all allowed members", guild=GUILD)
 async def members(interaction: discord.Interaction):
