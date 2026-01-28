@@ -1863,32 +1863,28 @@ async def manual_sync(ctx):
 
 # ==================== LOCKDOWN CONTROL ====================
 @tree.command(name="ok", description="Owner only: Unlock server from lockdown")
-@checks.has_role(ROLE_ID)
 async def ok_command(interaction: discord.Interaction):
     """Owner only: Unlock server with /ok"""
-    print(f"🔍 DEBUG: /ok command triggered | Author: {interaction.user} ({interaction.user.id}) | Is Owner: {interaction.user.id == OWNER_ID}")
-    
-    # Owner check
-    if interaction.user.id != OWNER_ID:
-        print(f"❌ Unauthorized access attempt by {interaction.user.id}")
-        await interaction.response.send_message("❌ **UNAUTHORIZED:** Only the Owner can use this command.", ephemeral=True)
-        return
-    
-    print(f"✅ Owner verified. Processing lockdown lift...")
-    
-    global is_locked_down
-    print(f"📊 Current lockdown state: {is_locked_down}")
-    
-    # If not locked, still execute (owner force-unlock)
-    if not is_locked_down:
-        await interaction.response.send_message("⚠️ **INFO:** Server is already unlocked, but executing unlock sequence...", ephemeral=False)
-    else:
-        await interaction.response.defer()
-    
-    is_locked_down = False
-    print(f"🔓 Lockdown state set to: False")
-    
     try:
+        print(f"🔍 DEBUG: /ok command triggered | Author: {interaction.user} ({interaction.user.id}) | Is Owner: {interaction.user.id == OWNER_ID}")
+        
+        # Owner check
+        if interaction.user.id != OWNER_ID:
+            print(f"❌ Unauthorized access attempt by {interaction.user.id}")
+            await interaction.response.send_message("❌ **UNAUTHORIZED:** Only the Owner can use this command.", ephemeral=True)
+            return
+        
+        print(f"✅ Owner verified. Processing lockdown lift...")
+        
+        global is_locked_down
+        print(f"📊 Current lockdown state: {is_locked_down}")
+        
+        # Defer response for heavy operations
+        await interaction.response.defer(thinking=True)
+        
+        is_locked_down = False
+        print(f"🔓 Lockdown state set to: False")
+        
         # Restore default role permissions (allow messaging and voice)
         role = interaction.guild.default_role
         print(f"📝 Editing @everyone role permissions...")
@@ -1900,11 +1896,7 @@ async def ok_command(interaction: discord.Interaction):
         await role.edit(permissions=perms, reason="Owner Command: /ok - Lockdown Lifted")
         print(f"✅ Role permissions updated successfully")
         
-        if is_locked_down:
-            await interaction.followup.send("✅ **STATUS GREEN:** Lockdown lifted. Server is back to normal.")
-        else:
-            await interaction.followup.send("✅ **STATUS GREEN:** Lockdown lifted. Server is back to normal.")
-        
+        await interaction.followup.send("✅ **STATUS GREEN:** Lockdown lifted. Server is back to normal.")
         print("🟢 Lockdown lifted by Owner.")
         
         # Alert all admins
@@ -1914,9 +1906,13 @@ async def ok_command(interaction: discord.Interaction):
             "Time": datetime.datetime.now().strftime("%H:%M:%S")
         })
     except Exception as e:
-        is_locked_down = True  # Revert on failure
-        print(f"🔴 Error lifting lockdown: {str(e)}")
-        await interaction.followup.send(f"⚠️ **ERROR:** Failed to lift lockdown: {e}")
+        is_locked_down = False
+        print(f"🔴 Error in /ok command: {str(e)}")
+        try:
+            await interaction.followup.send(f"⚠️ **ERROR:** {str(e)[:100]}")
+        except:
+            await interaction.response.send_message(f"⚠️ **ERROR:** {str(e)[:100]}")
+
 
 # ==================== STARTUP ====================
 @bot.event
