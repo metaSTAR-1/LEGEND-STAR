@@ -831,49 +831,53 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
     dont_do = discord.ui.TextInput(label="Don't Do", style=discord.TextStyle.paragraph)
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        uid = str(interaction.user.id)
-        print(f"\n{'='*70}")
-        print(f"📝 [TODO SUBMIT] User: {interaction.user.name}#{interaction.user.discriminator}")
-        print(f"   User ID: {interaction.user.id}")
-        print(f"   UID String: {uid}")
-        print(f"   Is Owner: {interaction.user.id == OWNER_ID}")
-        
-        # Check if user is in active members list
-        user_doc = safe_find_one(active_members_coll, {"_id": uid})
-        print(f"   Active Members lookup: {user_doc}")
-        print(f"{'='*70}\n")
-        
-        if not user_doc and interaction.user.id != OWNER_ID:
-            print(f"❌ User {uid} not authorized - not in active list and not owner")
-            await interaction.followup.send("❌ Not authorized (not in active list).", ephemeral=True)
-            return
-        
-        # Save to database
-        safe_update_one(todo_coll, {"_id": uid}, {"$set": {
-            "last_submit": time.time(),
-            "todo": {
-                "name": self.name.value,
-                "date": self.date.value,
-                "must_do": self.must_do.value or "N/A",
-                "can_do": self.can_do.value or "N/A",
-                "dont_do": self.dont_do.value or "N/A"
-            }
-        }}, upsert=True)
-        
-        # Create the embed
-        embed = discord.Embed(title="✅ New TODO Submitted", color=discord.Color.green())
-        embed.add_field(name="👤 Submitted By", value=interaction.user.mention, inline=False)
-        embed.add_field(name="📅 Date", value=self.date.value, inline=True)
-        embed.add_field(name="📝 Name", value=self.name.value, inline=True)
-        embed.add_field(name="✔️ Must Do", value=self.must_do.value or "N/A", inline=False)
-        embed.add_field(name="🎯 Can Do", value=self.can_do.value or "N/A", inline=False)
-        embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
-        embed.set_footer(text=f"Status: Submitted | User: {interaction.user.id}")
-        
-        # Send to channel DIRECTLY
-        print(f"\n🔥 [TODO] Attempting direct send to channel...")
         try:
+            await interaction.response.defer(ephemeral=True)
+            uid = str(interaction.user.id)
+            print(f"\n{'='*70}")
+            print(f"📝 [TODO SUBMIT] User: {interaction.user.name}#{interaction.user.discriminator}")
+            print(f"   User ID: {interaction.user.id}")
+            print(f"   UID String: {uid}")
+            print(f"   Is Owner: {interaction.user.id == OWNER_ID}")
+            
+            # Check if user is in active members list
+            user_doc = safe_find_one(active_members_coll, {"_id": uid})
+            print(f"   Active Members lookup: {user_doc}")
+            print(f"{'='*70}\n")
+            
+            if not user_doc and interaction.user.id != OWNER_ID:
+                print(f"❌ User {uid} not authorized - not in active list and not owner")
+                await interaction.followup.send("❌ Not authorized (not in active list).", ephemeral=True)
+                return
+            
+            # Save to database
+            print(f"⏸️ [TODO] Saving to database...")
+            safe_update_one(todo_coll, {"_id": uid}, {"$set": {
+                "last_submit": time.time(),
+                "todo": {
+                    "name": self.name.value,
+                    "date": self.date.value,
+                    "must_do": self.must_do.value or "N/A",
+                    "can_do": self.can_do.value or "N/A",
+                    "dont_do": self.dont_do.value or "N/A"
+                }
+            }}, upsert=True)
+            print(f"✅ [TODO] Database save complete")
+            
+            # Create the embed
+            print(f"🎨 [TODO] Creating embed...")
+            embed = discord.Embed(title="✅ New TODO Submitted", color=discord.Color.green())
+            embed.add_field(name="👤 Submitted By", value=interaction.user.mention, inline=False)
+            embed.add_field(name="📅 Date", value=self.date.value, inline=True)
+            embed.add_field(name="📝 Name", value=self.name.value, inline=True)
+            embed.add_field(name="✔️ Must Do", value=self.must_do.value or "N/A", inline=False)
+            embed.add_field(name="🎯 Can Do", value=self.can_do.value or "N/A", inline=False)
+            embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
+            embed.set_footer(text=f"Status: Submitted | User: {interaction.user.id}")
+            print(f"✅ [TODO] Embed created successfully")
+            
+            # Send to channel DIRECTLY
+            print(f"\n🔥 [TODO] Attempting direct send to channel...")
             print(f"🔥 Guild ID: {GUILD_ID}, Channel ID: {TODO_CHANNEL_ID}")
             # First try get_guild (cached)
             guild = bot.get_guild(GUILD_ID)
@@ -906,12 +910,17 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
                     print(f"❌ Channel not found after fetch")
             else:
                 print(f"❌ Guild not found after fetch")
+            
+            await interaction.followup.send("✅ TODO submitted successfully!", ephemeral=True)
+            
         except Exception as e:
-            print(f"❌ ERROR in direct send: {type(e).__name__}: {e}")
+            print(f"\n❌ CRITICAL ERROR in TodoModal.on_submit: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
-        
-        await interaction.followup.send("✅ TODO submitted successfully!", ephemeral=True)
+            try:
+                await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+            except:
+                pass
 
 @tree.command(name="todo", description="Submit your own todo", guild=GUILD)
 async def todo(interaction: discord.Interaction):
@@ -925,36 +934,41 @@ class AtodoModal(TodoModal):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         uid = str(self.target.id)
-        if not safe_find_one(active_members_coll, {"_id": uid}):
-            await interaction.followup.send("Target not in active list.", ephemeral=True)
-            return
         
-        # Save to database (same as user submission)
-        safe_update_one(todo_coll, {"_id": uid}, {"$set": {
-            "last_submit": time.time(),
-            "todo": {
-                "name": self.name.value,
-                "date": self.date.value,
-                "must_do": self.must_do.value or "N/A",
-                "can_do": self.can_do.value or "N/A",
-                "dont_do": self.dont_do.value or "N/A"
-            }
-        }}, upsert=True)
-        
-        # Create the embed
-        embed = discord.Embed(title="✅ TODO Submitted (By Owner)", color=discord.Color.gold())
-        embed.add_field(name="👤 For User", value=self.target.mention, inline=False)
-        embed.add_field(name="👨‍💼 Submitted By", value=interaction.user.mention, inline=False)
-        embed.add_field(name="📅 Date", value=self.date.value, inline=True)
-        embed.add_field(name="📝 Name", value=self.name.value, inline=True)
-        embed.add_field(name="✔️ Must Do", value=self.must_do.value or "N/A", inline=False)
-        embed.add_field(name="🎯 Can Do", value=self.can_do.value or "N/A", inline=False)
-        embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
-        embed.set_footer(text=f"Status: Submitted by Owner | Target: {self.target.id}")
-        
-        # Send to channel DIRECTLY
-        print(f"\n🔥 [ATODO] Attempting direct send to channel...")
         try:
+            if not safe_find_one(active_members_coll, {"_id": uid}):
+                await interaction.followup.send("Target not in active list.", ephemeral=True)
+                return
+            
+            # Save to database (same as user submission)
+            print(f"⏸️ [ATODO] Saving to database...")
+            safe_update_one(todo_coll, {"_id": uid}, {"$set": {
+                "last_submit": time.time(),
+                "todo": {
+                    "name": self.name.value,
+                    "date": self.date.value,
+                    "must_do": self.must_do.value or "N/A",
+                    "can_do": self.can_do.value or "N/A",
+                    "dont_do": self.dont_do.value or "N/A"
+                }
+            }}, upsert=True)
+            print(f"✅ [ATODO] Database save complete")
+            
+            # Create the embed
+            print(f"🎨 [ATODO] Creating embed...")
+            embed = discord.Embed(title="✅ TODO Submitted (By Owner)", color=discord.Color.gold())
+            embed.add_field(name="👤 For User", value=self.target.mention, inline=False)
+            embed.add_field(name="👨‍💼 Submitted By", value=interaction.user.mention, inline=False)
+            embed.add_field(name="📅 Date", value=self.date.value, inline=True)
+            embed.add_field(name="📝 Name", value=self.name.value, inline=True)
+            embed.add_field(name="✔️ Must Do", value=self.must_do.value or "N/A", inline=False)
+            embed.add_field(name="🎯 Can Do", value=self.can_do.value or "N/A", inline=False)
+            embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
+            embed.set_footer(text=f"Status: Submitted by Owner | Target: {self.target.id}")
+            print(f"✅ [ATODO] Embed created successfully")
+            
+            # Send to channel DIRECTLY
+            print(f"\n🔥 [ATODO] Attempting direct send to channel...")
             print(f"🔥 Guild ID: {GUILD_ID}, Channel ID: {TODO_CHANNEL_ID}")
             # First try get_guild (cached)
             guild = bot.get_guild(GUILD_ID)
@@ -987,8 +1001,9 @@ class AtodoModal(TodoModal):
                     print(f"❌ Channel not found after fetch")
             else:
                 print(f"❌ Guild not found after fetch")
+                
         except Exception as e:
-            print(f"❌ ERROR in direct send: {type(e).__name__}: {e}")
+            print(f"❌ ERROR in ATODO submit: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
         
