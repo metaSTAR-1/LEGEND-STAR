@@ -771,109 +771,56 @@ async def on_member_join(member: discord.Member):
 async def send_todo_to_channel(embed: discord.Embed, source: str = "TodoModal"):
     """Send TODO embed to the dedicated TODO channel - GUARANTEED to send"""
     print(f"\n{'='*70}")
-    print(f"🔥 [SENDING TODO] Starting send operation from {source}")
+    print(f"� [SEND_TODO_TO_CHANNEL] Starting")
+    print(f"   Source: {source}")
     print(f"   Guild ID: {GUILD_ID}")
     print(f"   Channel ID: {TODO_CHANNEL_ID}")
-    print(f"{'='*70}")
+    print(f"   Embed title: {embed.title}")
     
     if GUILD_ID <= 0 or TODO_CHANNEL_ID <= 0:
-        print(f"❌ Invalid IDs - GUILD_ID: {GUILD_ID}, CHANNEL_ID: {TODO_CHANNEL_ID}")
+        print(f"❌ Invalid IDs")
         return False
     
-    success = False
-    
-    # ATTEMPT 1: Direct bot.get_guild() + get_channel()
-    print(f"[ATTEMPT 1] Trying bot.get_guild({GUILD_ID})")
     try:
+        print(f"📤 Attempt: bot.get_guild({GUILD_ID})")
         guild = bot.get_guild(GUILD_ID)
-        print(f"   bot.get_guild result: {guild}")
+        print(f"   Result: {guild}")
         
-        if guild:
-            print(f"   ✅ Guild object exists: {guild.name}")
-            channel = guild.get_channel(TODO_CHANNEL_ID)
-            print(f"   guild.get_channel({TODO_CHANNEL_ID}) result: {channel}")
-            
-            if channel:
-                print(f"   ✅ Channel object exists: #{channel.name}")
-                print(f"   📤 Sending message...")
-                await channel.send(embed=embed)
-                print(f"   ✅✅✅ SUCCESS: Message sent!")
-                success = True
-            else:
-                print(f"   ❌ get_channel returned None")
-        else:
-            print(f"   ❌ bot.get_guild returned None")
+        if not guild:
+            print(f"❌ Guild is None, returning False")
+            return False
+        
+        print(f"✅ Guild: {guild.name}")
+        print(f"📤 Attempt: guild.get_channel({TODO_CHANNEL_ID})")
+        channel = guild.get_channel(TODO_CHANNEL_ID)
+        print(f"   Result: {channel}")
+        
+        if not channel:
+            print(f"❌ Channel is None, trying fetch_channel...")
+            try:
+                channel = await guild.fetch_channel(TODO_CHANNEL_ID)
+                print(f"✅ Channel fetched: {channel}")
+            except Exception as fe:
+                print(f"❌ fetch_channel failed: {fe}")
+                return False
+        
+        if not channel:
+            print(f"❌ Channel is still None after both methods")
+            return False
+        
+        print(f"✅ Channel: {channel.name}")
+        print(f"📤 Sending message to channel...")
+        await channel.send(embed=embed)
+        print(f"✅✅✅ MESSAGE SENT SUCCESSFULLY! ✅✅✅")
+        print(f"{'='*70}\n")
+        return True
+        
     except Exception as e:
-        print(f"   ❌ Exception: {type(e).__name__}: {e}")
+        print(f"❌ Exception: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
-    
-    # ATTEMPT 2: Try fetch_channel if get_channel failed
-    if not success:
-        print(f"[ATTEMPT 2] Trying guild.fetch_channel({TODO_CHANNEL_ID})")
-        try:
-            guild = bot.get_guild(GUILD_ID)
-            if guild:
-                print(f"   Guild exists: {guild.name}")
-                channel = await guild.fetch_channel(TODO_CHANNEL_ID)
-                print(f"   ✅ Channel fetched: {channel.name}")
-                await channel.send(embed=embed)
-                print(f"   ✅✅✅ SUCCESS: Message sent via fetch_channel!")
-                success = True
-            else:
-                print(f"   ❌ Guild is None")
-        except Exception as e:
-            print(f"   ❌ Exception: {type(e).__name__}: {e}")
-    
-    # ATTEMPT 3: Try via bot.guilds list
-    if not success:
-        print(f"[ATTEMPT 3] Searching through bot.guilds list")
-        print(f"   bot.guilds count: {len(bot.guilds)}")
-        try:
-            for g in bot.guilds:
-                print(f"   Checking guild: {g.name} (ID: {g.id})")
-                if g.id == GUILD_ID:
-                    print(f"   ✅ Found target guild!")
-                    ch = g.get_channel(TODO_CHANNEL_ID)
-                    if ch:
-                        print(f"   ✅ Found channel: {ch.name}")
-                        await ch.send(embed=embed)
-                        print(f"   ✅✅✅ SUCCESS: Message sent via guilds iteration!")
-                        success = True
-                        break
-                    else:
-                        print(f"   ❌ Channel not found in guild")
-        except Exception as e:
-            print(f"   ❌ Exception: {type(e).__name__}: {e}")
-    
-    # ATTEMPT 4: Final fallback - try to get channel by ID directly from bot
-    if not success:
-        print(f"[ATTEMPT 4] Trying bot.get_channel({TODO_CHANNEL_ID}) directly")
-        try:
-            channel = bot.get_channel(TODO_CHANNEL_ID)
-            print(f"   bot.get_channel result: {channel}")
-            if channel:
-                print(f"   ✅ Channel found: {channel.name}")
-                await channel.send(embed=embed)
-                print(f"   ✅✅✅ SUCCESS: Message sent via bot.get_channel()!")
-                success = True
-        except Exception as e:
-            print(f"   ❌ Exception: {type(e).__name__}: {e}")
-    
-    # RESULT
-    print(f"{'='*70}")
-    if success:
-        print(f"✅✅✅ [RESULT] TODO MESSAGE SUCCESSFULLY SENT! ✅✅✅")
-    else:
-        print(f"❌❌❌ [RESULT] FAILED TO SEND TODO MESSAGE ❌❌❌")
-        print(f"Debug info:")
-        print(f"  - Guild ID from .env: {GUILD_ID}")
-        print(f"  - Channel ID from code: {TODO_CHANNEL_ID}")
-        print(f"  - Bot is ready: {bot.is_ready()}")
-        print(f"  - Bot.guilds: {[g.name for g in bot.guilds]}")
-    print(f"{'='*70}\n")
-    
-    return success
+        print(f"{'='*70}\n")
+        return False
 
 # ==================== TODO SYSTEM ====================
 class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
@@ -924,8 +871,15 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
         embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
         embed.set_footer(text=f"Status: Submitted | User: {interaction.user.id}")
         
-        # Send to channel using helper function
-        await send_todo_to_channel(embed, source="TodoModal")
+        # Send to channel using helper function with error handling
+        print(f"\n🔥 [TODO] About to call send_todo_to_channel...")
+        try:
+            result = await send_todo_to_channel(embed, source="TodoModal")
+            print(f"🔥 [TODO] send_todo_to_channel returned: {result}")
+        except Exception as e:
+            print(f"🔥 [TODO] ERROR calling send_todo_to_channel: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
         
         await interaction.followup.send("✅ TODO submitted successfully!", ephemeral=True)
 
@@ -968,8 +922,15 @@ class AtodoModal(TodoModal):
         embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
         embed.set_footer(text=f"Status: Submitted by Owner | Target: {self.target.id}")
         
-        # Send to channel using helper function
-        await send_todo_to_channel(embed, source="AtodoModal")
+        # Send to channel using helper function with error handling
+        print(f"\n🔥 [ATODO] About to call send_todo_to_channel...")
+        try:
+            result = await send_todo_to_channel(embed, source="AtodoModal")
+            print(f"🔥 [ATODO] send_todo_to_channel returned: {result}")
+        except Exception as e:
+            print(f"🔥 [ATODO] ERROR calling send_todo_to_channel: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
         
         await interaction.followup.send(f"✅ TODO submitted for {self.target.mention}!", ephemeral=True)
 
