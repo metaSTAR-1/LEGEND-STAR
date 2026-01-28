@@ -297,11 +297,11 @@ def save_with_retry(collection, query, update, max_retries=3):
     
     for attempt in range(max_retries):
         try:
-            result = collection.update_one(query, update)
+            # CRITICAL: Must use upsert=True to create documents if they don't exist
+            result = collection.update_one(query, update, upsert=True)
             if result.modified_count > 0 or result.upserted_id:
-                print(f"✅ Data saved successfully on attempt {attempt + 1}")
                 return True
-            # Document may not exist yet, that's okay
+            # Document may not exist yet, that's okay - upsert created it
             return True
         except Exception as e:
             print(f"⚠️ Save attempt {attempt + 1} failed: {str(e)[:80]}")
@@ -444,7 +444,18 @@ async def batch_save_study():
             if mins > 0:
                 cam = member.voice.self_video or member.voice.streaming
                 field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
-                result = save_with_retry(users_coll, {"_id": str(uid)}, {"$inc": {field: mins}})
+                # CRITICAL FIX: Use $setOnInsert to create document if it doesn't exist
+                result = save_with_retry(users_coll, {"_id": str(uid)}, {
+                    "$inc": {field: mins},
+                    "$setOnInsert": {
+                        "data": {
+                            "voice_cam_on_minutes": 0,
+                            "voice_cam_off_minutes": 0,
+                            "message_count": 0,
+                            "yesterday": {"cam_on": 0, "cam_off": 0}
+                        }
+                    }
+                })
                 if result:
                     print(f"⏱️ {member.display_name}: +{mins}m {field} (Cam: {cam}) ✅")
                     saved_count += 1
@@ -469,7 +480,18 @@ async def batch_save_study():
                 if mins > 0:
                     cam = member.voice.self_video or member.voice.streaming
                     field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
-                    result = save_with_retry(users_coll, {"_id": str(member.id)}, {"$inc": {field: mins}})
+                    # CRITICAL FIX: Use $setOnInsert to create document if it doesn't exist
+                    result = save_with_retry(users_coll, {"_id": str(member.id)}, {
+                        "$inc": {field: mins},
+                        "$setOnInsert": {
+                            "data": {
+                                "voice_cam_on_minutes": 0,
+                                "voice_cam_off_minutes": 0,
+                                "message_count": 0,
+                                "yesterday": {"cam_on": 0, "cam_off": 0}
+                            }
+                        }
+                    })
                     if result:
                         print(f"⏱️ {member.display_name}: +{mins}m {field} (Cam: {cam}) ✅")
                         saved_count += 1
@@ -547,6 +569,7 @@ async def lb(interaction: discord.Interaction):
         
         docs = safe_find(users_coll, {}, limit=100)
         print(f"🔍 /lb command: Found {len(docs)} total documents in MongoDB")
+        print(f"   ℹ️  Fetching data from all {len(docs)} users...")
         
         active = []
         # Use guild.members cache instead of fetching (faster)
@@ -562,12 +585,15 @@ async def lb(interaction: discord.Interaction):
                 data = doc.get("data", {})
                 cam_on = data.get("voice_cam_on_minutes", 0)
                 cam_off = data.get("voice_cam_off_minutes", 0)
-                print(f"   - {member.display_name}: Cam ON {cam_on}m, Cam OFF {cam_off}m")
+                total = cam_on + cam_off
+                print(f"   - {member.display_name}: Cam ON {cam_on}m, Cam OFF {cam_off}m (Total: {total}m)")
                 if cam_on > 0 or cam_off > 0:
                     active.append({"name": member.display_name, "cam_on": cam_on, "cam_off": cam_off})
             except (ValueError, KeyError) as e:
                 print(f"   ⚠️ Error processing doc: {e}")
                 continue
+        
+        print(f"   ✅ Processed {len(docs)} documents, {len(active)} have data")
         sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:15]
         sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:10]
         desc = "**Cam On ✅**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_on'])}" for i, u in enumerate(sorted_on, 1) if u["cam_on"] > 0) or "No data yet. Start joining voice channels!\n")
