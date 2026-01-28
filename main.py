@@ -1862,52 +1862,53 @@ async def manual_sync(ctx):
         await ctx.send(f"Sync failed: {e}")
 
 # ==================== LOCKDOWN CONTROL ====================
-@bot.command(name="all")
-async def all_ok_command(ctx, *, status: str = None):
-    """Owner only: Unlock server with !all ok"""
-    print(f"🔍 DEBUG: !all command triggered | Author: {ctx.author} ({ctx.author.id}) | Status param: '{status}' | Is Owner: {ctx.author.id == OWNER_ID}")
+@tree.command(name="ok", description="Owner only: Unlock server from lockdown")
+@checks.has_role(ROLE_ID)
+async def ok_command(interaction: discord.Interaction):
+    """Owner only: Unlock server with /ok"""
+    print(f"🔍 DEBUG: /ok command triggered | Author: {interaction.user} ({interaction.user.id}) | Is Owner: {interaction.user.id == OWNER_ID}")
     
     # Owner check
-    if ctx.author.id != OWNER_ID:
-        print(f"❌ Unauthorized access attempt by {ctx.author.id}")
-        await ctx.send("❌ **UNAUTHORIZED:** Only the Owner can use this command.")
+    if interaction.user.id != OWNER_ID:
+        print(f"❌ Unauthorized access attempt by {interaction.user.id}")
+        await interaction.response.send_message("❌ **UNAUTHORIZED:** Only the Owner can use this command.", ephemeral=True)
         return
     
-    # Validate syntax - must have "ok"
-    if not status or status.strip().lower() != "ok":
-        print(f"❌ Invalid syntax. Received: '{status}'")
-        await ctx.send("❌ **INVALID SYNTAX:** Use `!all ok` to lift lockdown.")
-        return
-    
-    print(f"✅ Syntax valid. Processing lockdown lift...")
+    print(f"✅ Owner verified. Processing lockdown lift...")
     
     global is_locked_down
     print(f"📊 Current lockdown state: {is_locked_down}")
     
     # If not locked, still execute (owner force-unlock)
     if not is_locked_down:
-        await ctx.send("⚠️ **INFO:** Server is already unlocked, but executing unlock sequence...")
+        await interaction.response.send_message("⚠️ **INFO:** Server is already unlocked, but executing unlock sequence...", ephemeral=False)
+    else:
+        await interaction.response.defer()
     
     is_locked_down = False
     print(f"🔓 Lockdown state set to: False")
     
     try:
         # Restore default role permissions (allow messaging and voice)
-        role = ctx.guild.default_role
+        role = interaction.guild.default_role
         print(f"📝 Editing @everyone role permissions...")
         perms = role.permissions
         perms.send_messages = True
         perms.connect = True
         perms.speak = True
         
-        await role.edit(permissions=perms, reason="Owner Command: !all ok - Lockdown Lifted")
+        await role.edit(permissions=perms, reason="Owner Command: /ok - Lockdown Lifted")
         print(f"✅ Role permissions updated successfully")
         
-        await ctx.send("✅ **STATUS GREEN:** Lockdown lifted. Server is back to normal.")
+        if is_locked_down:
+            await interaction.followup.send("✅ **STATUS GREEN:** Lockdown lifted. Server is back to normal.")
+        else:
+            await interaction.followup.send("✅ **STATUS GREEN:** Lockdown lifted. Server is back to normal.")
+        
         print("🟢 Lockdown lifted by Owner.")
         
         # Alert all admins
-        await alert_owner(ctx.guild, "LOCKDOWN LIFTED", {
+        await alert_owner(interaction.guild, "LOCKDOWN LIFTED", {
             "Status": "Server is now UNLOCKED",
             "Action": "Performed by Owner",
             "Time": datetime.datetime.now().strftime("%H:%M:%S")
@@ -1915,7 +1916,7 @@ async def all_ok_command(ctx, *, status: str = None):
     except Exception as e:
         is_locked_down = True  # Revert on failure
         print(f"🔴 Error lifting lockdown: {str(e)}")
-        await ctx.send(f"⚠️ **ERROR:** Failed to lift lockdown: {e}")
+        await interaction.followup.send(f"⚠️ **ERROR:** Failed to lift lockdown: {e}")
 
 # ==================== STARTUP ====================
 @bot.event
