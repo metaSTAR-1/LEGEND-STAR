@@ -1862,7 +1862,7 @@ async def manual_sync(ctx):
         await ctx.send(f"Sync failed: {e}")
 
 # ==================== LOCKDOWN CONTROL ====================
-@tree.command(name="ok", description="Owner only: Unlock server from lockdown")
+@tree.command(name="ok", description="Owner only: Unlock server from lockdown", guild=GUILD)
 async def ok_command(interaction: discord.Interaction):
     """Owner only: Unlock server with /ok"""
     try:
