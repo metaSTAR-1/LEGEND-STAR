@@ -365,8 +365,10 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     now = time.time()
     old_in = bool(before.channel)
     new_in = bool(after.channel)
-    old_cam = before.self_video or before.streaming
-    new_cam = after.self_video or after.streaming
+    # Cam is ON if: camera is on AND not screen sharing
+    # Cam is OFF if: camera is off OR screen sharing
+    old_cam = before.self_video and not before.self_stream
+    new_cam = after.self_video and not after.self_stream
 
     # Initialize user record first
     save_with_retry(users_coll, {"_id": user_id}, {"$setOnInsert": {"data": {"voice_cam_on_minutes": 0, "voice_cam_off_minutes": 0, "message_count": 0, "yesterday": {"cam_on": 0, "cam_off": 0}}}})
@@ -415,7 +417,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                     except:
                         pass
                     await asyncio.sleep(180)
-                    if member.voice and member.voice.channel and not (member.voice.self_video or member.voice.streaming):
+                    if member.voice and member.voice.channel and not (member.voice.self_video and not member.voice.self_stream):
                         await member.move_to(None, reason="Cam Off")
                     cam_timers.pop(member.id, None)
                 cam_timers[member.id] = bot.loop.create_task(enforce())
@@ -442,7 +444,8 @@ async def batch_save_study():
             
             mins = int((now - join) // 60)
             if mins > 0:
-                cam = member.voice.self_video or member.voice.streaming
+                # Cam ON: camera is on AND not screen sharing. Cam OFF: camera off OR screen sharing
+                cam = member.voice.self_video and not member.voice.self_stream
                 field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
                 # FIX: Separate operations to avoid MongoDB conflict
                 # First: Create document if it doesn't exist
@@ -482,7 +485,8 @@ async def batch_save_study():
                     mins = int((now - vc_join_times[member.id]) // 60)
                 
                 if mins > 0:
-                    cam = member.voice.self_video or member.voice.streaming
+                    # Cam ON: camera is on AND not screen sharing. Cam OFF: camera off OR screen sharing
+                    cam = member.voice.self_video and not member.voice.self_stream
                     field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
                     # FIX: Separate operations to avoid MongoDB conflict
                     users_coll.update_one(
