@@ -1865,22 +1865,22 @@ async def manual_sync(ctx):
 @tree.command(name="ok", description="Owner only: Unlock server from lockdown", guild=GUILD)
 async def ok_command(interaction: discord.Interaction):
     """Owner only: Unlock server with /ok"""
+    print(f"🔍 DEBUG: /ok command triggered | Author: {interaction.user} ({interaction.user.id}) | Is Owner: {interaction.user.id == OWNER_ID}")
+    
+    # Owner check FIRST (before deferring)
+    if interaction.user.id != OWNER_ID:
+        print(f"❌ Unauthorized access attempt by {interaction.user.id}")
+        await interaction.response.send_message("❌ **UNAUTHORIZED:** Only the Owner can use this command.", ephemeral=True)
+        return
+    
+    print(f"✅ Owner verified. Processing lockdown lift...")
+    
+    # Now defer for the rest of the operation
+    await interaction.response.defer(thinking=True)
+    
     try:
-        print(f"🔍 DEBUG: /ok command triggered | Author: {interaction.user} ({interaction.user.id}) | Is Owner: {interaction.user.id == OWNER_ID}")
-        
-        # Owner check
-        if interaction.user.id != OWNER_ID:
-            print(f"❌ Unauthorized access attempt by {interaction.user.id}")
-            await interaction.response.send_message("❌ **UNAUTHORIZED:** Only the Owner can use this command.", ephemeral=True)
-            return
-        
-        print(f"✅ Owner verified. Processing lockdown lift...")
-        
         global is_locked_down
         print(f"📊 Current lockdown state: {is_locked_down}")
-        
-        # Defer response for heavy operations
-        await interaction.response.defer(thinking=True)
         
         is_locked_down = False
         print(f"🔓 Lockdown state set to: False")
@@ -1908,10 +1908,7 @@ async def ok_command(interaction: discord.Interaction):
     except Exception as e:
         is_locked_down = False
         print(f"🔴 Error in /ok command: {str(e)}")
-        try:
-            await interaction.followup.send(f"⚠️ **ERROR:** {str(e)[:100]}")
-        except:
-            await interaction.response.send_message(f"⚠️ **ERROR:** {str(e)[:100]}")
+        await interaction.followup.send(f"⚠️ **ERROR:** {str(e)[:100]}")
 
 
 # ==================== STARTUP ====================
