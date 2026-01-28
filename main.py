@@ -554,9 +554,9 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
     # 🎥 ADVANCED CAM ENFORCEMENT SYSTEM 🎥
     # Logic:
-    # - Screenshare ON + Cam ON = ✅ OK (no warning)
+    # - Screenshare ON + Cam ON = ✅ CAM ON (no warning, screenshare bonus)
     # - Screenshare ON + Cam OFF = ✅ OK (screenshare is acceptable, no cam needed)
-    # - Screenshare OFF + Cam ON = ✅ OK (cam on, no warning)
+    # - Screenshare OFF + Cam ON = ✅ CAM ON (no warning)
     # - Screenshare OFF + Cam OFF = ❌ WARNING (please cam on within 3 min or KICK)
     
     channel = after.channel
@@ -564,19 +564,24 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         has_cam = after.self_video  # True if camera is on
         has_screenshare = after.self_stream  # True if screensharing
         
-        # ✅ ALLOWED: Cam on (regardless of screenshare)
+        # ✅ PRIMARY: CAM ON - Most important status (ignores screenshare status)
         if has_cam:
             task = cam_timers.pop(member.id, None)
             if task:
                 task.cancel()
-            print(f"✅ [{member.display_name}] CAM ON - No warning needed (Screenshare: {has_screenshare})")
+            
+            # If both cam and screenshare are on, show that explicitly
+            if has_screenshare:
+                print(f"✅ [{member.display_name}] CAM ON + SCREENSHARE ON - No warning needed (Both active)")
+            else:
+                print(f"✅ [{member.display_name}] CAM ON - No warning needed")
         
-        # ✅ ALLOWED: Screenshare on (even if cam off) - No enforcement needed
+        # ✅ FALLBACK: Screenshare on (only if cam off) - No enforcement needed
         elif has_screenshare:
             task = cam_timers.pop(member.id, None)
             if task:
                 task.cancel()
-            print(f"✅ [{member.display_name}] SCREENSHARE ON - Cam not required (Cam: {has_cam})")
+            print(f"✅ [{member.display_name}] SCREENSHARE ON - Cam not required (Alternative approved)")
         
         # ❌ NOT ALLOWED: Neither cam nor screenshare - Enforce cam NOW!
         else:
