@@ -62,6 +62,8 @@ TODO_CHANNEL_ID = 1458400694682783775
 ROLE_ID = 1458400797133115474
 PORT = int(os.getenv("PORT", 3000))
 print(f"GUILD_ID from env: {GUILD_ID}")  # DEBUG: Check if set correctly
+# Excluded voice channel ID: do not record cam on/off minutes for this VC
+EXCLUDED_VOICE_CHANNEL_ID = 1466076240111992954
 
 # Strict channels
 STRICT_CHANNEL_IDS = {"1428762702414872636", "1455906399262605457", "1455582132218106151", "1427325474551500851", "1428762820585062522"}
@@ -541,9 +543,20 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         if member.id in vc_join_times:
             mins = int((now - vc_join_times[member.id]) // 60)
             if mins > 0:
-                field = "data.voice_cam_on_minutes" if old_cam else "data.voice_cam_off_minutes"
-                result = save_with_retry(users_coll, {"_id": user_id}, {"$inc": {field: mins}})
-                print(f"💾 [{field}] Saved {mins}m for {member.display_name} - MongoDB: {result}")
+                # Determine the relevant channel for this event (prefer before when leaving)
+                relevant_channel = None
+                if before and before.channel:
+                    relevant_channel = before.channel
+                elif after and after.channel:
+                    relevant_channel = after.channel
+
+                # Skip recording stats for excluded voice channel
+                if relevant_channel and getattr(relevant_channel, 'id', None) == EXCLUDED_VOICE_CHANNEL_ID:
+                    print(f"⏭️ Skipping cam stat save for excluded channel ({EXCLUDED_VOICE_CHANNEL_ID}) for {member.display_name}")
+                else:
+                    field = "data.voice_cam_on_minutes" if old_cam else "data.voice_cam_off_minutes"
+                    result = save_with_retry(users_coll, {"_id": user_id}, {"$inc": {field: mins}})
+                    print(f"💾 [{field}] Saved {mins}m for {member.display_name} - MongoDB: {result}")
             del vc_join_times[member.id]
 
     # Track when user joins VC
@@ -692,6 +705,18 @@ async def batch_save_study():
             if mins > 0:
                 # Cam ON: camera is on AND not screen sharing. Cam OFF: camera off OR screen sharing
                 cam = member.voice.self_video and not member.voice.self_stream
+                # Skip saving for excluded voice channel
+                try:
+                    current_channel = member.voice.channel
+                except Exception:
+                    current_channel = None
+
+                if current_channel and getattr(current_channel, 'id', None) == EXCLUDED_VOICE_CHANNEL_ID:
+                    print(f"⏭️ Skipping batch save for excluded channel ({EXCLUDED_VOICE_CHANNEL_ID}) for {member.display_name}")
+                    vc_join_times[uid] = now
+                    processed.add(uid)
+                    continue
+
                 field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
                 # FIX: Separate operations to avoid MongoDB conflict
                 # First: Create document if it doesn't exist
@@ -734,6 +759,11 @@ async def batch_save_study():
                 if mins > 0:
                     # Cam ON: camera is on AND not screen sharing. Cam OFF: camera off OR screen sharing
                     cam = member.voice.self_video and not member.voice.self_stream
+                    # Skip saving for excluded voice channel
+                    if getattr(channel, 'id', None) == EXCLUDED_VOICE_CHANNEL_ID:
+                        print(f"⏭️ Skipping batch save for excluded channel ({EXCLUDED_VOICE_CHANNEL_ID}) for {member.display_name}")
+                        vc_join_times[member.id] = now
+                        continue
                     field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
                     # FIX: Separate operations to avoid MongoDB conflict
                     users_coll.update_one(
