@@ -766,6 +766,82 @@ async def on_member_join(member: discord.Member):
         except:
             pass
 
+# ==================== TODO HELPERS ====================
+
+async def send_todo_to_channel(embed: discord.Embed, source: str = "TodoModal"):
+    """Send TODO embed to the dedicated TODO channel with multiple fallback methods"""
+    print(f"\n{'='*60}")
+    print(f"📝 [TODO SEND] Source: {source}")
+    print(f"📝 [TODO SEND] Target Channel ID: {TODO_CHANNEL_ID}")
+    print(f"📝 [TODO SEND] Target Guild ID: {GUILD_ID}")
+    
+    if GUILD_ID <= 0:
+        print(f"❌ [TODO SEND] GUILD_ID is invalid: {GUILD_ID}")
+        return False
+    
+    sent = False
+    
+    # Method 1: Direct bot.get_guild() - most reliable
+    try:
+        print(f"📝 [TODO SEND] Method 1: bot.get_guild({GUILD_ID})")
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            print(f"   ✅ Guild found: {guild.name} (ID: {guild.id})")
+            channel = guild.get_channel(TODO_CHANNEL_ID)
+            if channel:
+                print(f"   ✅ Channel found: {channel.name} (ID: {channel.id})")
+                print(f"   🔐 Bot permissions: {channel.permissions_for(guild.me)}")
+                await channel.send(embed=embed)
+                sent = True
+                print(f"   ✅✅✅ MESSAGE SENT VIA METHOD 1")
+            else:
+                print(f"   ❌ Channel not found via get_channel()")
+                # Try fetch_channel
+                try:
+                    print(f"   🔄 Trying fetch_channel() instead...")
+                    channel = await guild.fetch_channel(TODO_CHANNEL_ID)
+                    if channel:
+                        print(f"   ✅ Channel fetched: {channel.name} (ID: {channel.id})")
+                        await channel.send(embed=embed)
+                        sent = True
+                        print(f"   ✅✅✅ MESSAGE SENT VIA FETCH")
+                except Exception as fe:
+                    print(f"   ❌ fetch_channel failed: {type(fe).__name__}: {str(fe)[:100]}")
+        else:
+            print(f"   ❌ Guild not found!")
+    except Exception as e:
+        print(f"   ❌ Method 1 error: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+    
+    # Method 2: Try via bot.guilds iteration (if Method 1 failed)
+    if not sent:
+        try:
+            print(f"📝 [TODO SEND] Method 2: Iterate bot.guilds")
+            for g in bot.guilds:
+                if g.id == GUILD_ID:
+                    print(f"   ✅ Guild found in iteration: {g.name}")
+                    ch = g.get_channel(TODO_CHANNEL_ID)
+                    if ch:
+                        print(f"   ✅ Channel found: {ch.name}")
+                        await ch.send(embed=embed)
+                        sent = True
+                        print(f"   ✅✅✅ MESSAGE SENT VIA METHOD 2")
+                        break
+            if not sent:
+                print(f"   ❌ Guild or channel not found in iteration")
+        except Exception as e:
+            print(f"   ❌ Method 2 error: {type(e).__name__}: {str(e)}")
+    
+    print(f"{'='*60}")
+    if sent:
+        print(f"✅✅✅ [TODO SEND] SUCCESS")
+    else:
+        print(f"❌❌❌ [TODO SEND] FAILED - Message was NOT sent!")
+    print(f"{'='*60}\n")
+    
+    return sent
+
 # ==================== TODO SYSTEM ====================
 class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
     name = discord.ui.TextInput(label="Your Name", required=True)
@@ -793,7 +869,7 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
             }
         }}, upsert=True)
         
-        # Create the embed once
+        # Create the embed
         embed = discord.Embed(title="✅ New TODO Submitted", color=discord.Color.green())
         embed.add_field(name="👤 Submitted By", value=interaction.user.mention, inline=False)
         embed.add_field(name="📅 Date", value=self.date.value, inline=True)
@@ -803,42 +879,8 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
         embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
         embed.set_footer(text=f"Status: Submitted | User: {interaction.user.id}")
         
-        # Try to send to TODO channel via multiple methods
-        sent = False
-        
-        # Method 1: Use interaction.guild
-        try:
-            guild = interaction.guild
-            print(f"📝 TODO Modal - Method 1 (interaction.guild): Guild={guild is not None}, ID={guild.id if guild else 'None'}")
-            if guild:
-                channel = guild.get_channel(TODO_CHANNEL_ID)
-                print(f"   Channel found: {channel is not None}")
-                if channel:
-                    await channel.send(embed=embed)
-                    sent = True
-                    print(f"✅ TODO sent to channel via interaction.guild")
-        except Exception as e:
-            print(f"⚠️ Method 1 failed: {type(e).__name__}: {str(e)}")
-        
-        # Method 2: Use bot.get_guild() as fallback
-        if not sent:
-            try:
-                print(f"📝 TODO Modal - Method 2 (bot.get_guild): Trying GUILD_ID={GUILD_ID}")
-                if GUILD_ID > 0:
-                    guild = bot.get_guild(GUILD_ID)
-                    print(f"   bot.get_guild returned: {guild is not None}")
-                    if guild:
-                        channel = guild.get_channel(TODO_CHANNEL_ID)
-                        print(f"   Channel found: {channel is not None}")
-                        if channel:
-                            await channel.send(embed=embed)
-                            sent = True
-                            print(f"✅ TODO sent to channel via bot.get_guild")
-            except Exception as e:
-                print(f"⚠️ Method 2 failed: {type(e).__name__}: {str(e)}")
-        
-        if not sent:
-            print(f"❌ FAILED to send TODO to any channel!")
+        # Send to channel using helper function
+        await send_todo_to_channel(embed, source="TodoModal")
         
         await interaction.followup.send("✅ TODO submitted successfully!", ephemeral=True)
 
@@ -870,7 +912,7 @@ class AtodoModal(TodoModal):
             }
         }}, upsert=True)
         
-        # Create the embed once
+        # Create the embed
         embed = discord.Embed(title="✅ TODO Submitted (By Owner)", color=discord.Color.gold())
         embed.add_field(name="👤 For User", value=self.target.mention, inline=False)
         embed.add_field(name="👨‍💼 Submitted By", value=interaction.user.mention, inline=False)
@@ -881,42 +923,8 @@ class AtodoModal(TodoModal):
         embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
         embed.set_footer(text=f"Status: Submitted by Owner | Target: {self.target.id}")
         
-        # Try to send to TODO channel via multiple methods
-        sent = False
-        
-        # Method 1: Use interaction.guild
-        try:
-            guild = interaction.guild
-            print(f"📝 ATODO Modal - Method 1 (interaction.guild): Guild={guild is not None}, ID={guild.id if guild else 'None'}")
-            if guild:
-                channel = guild.get_channel(TODO_CHANNEL_ID)
-                print(f"   Channel found: {channel is not None}")
-                if channel:
-                    await channel.send(embed=embed)
-                    sent = True
-                    print(f"✅ ATODO sent to channel via interaction.guild")
-        except Exception as e:
-            print(f"⚠️ Method 1 failed: {type(e).__name__}: {str(e)}")
-        
-        # Method 2: Use bot.get_guild() as fallback
-        if not sent:
-            try:
-                print(f"📝 ATODO Modal - Method 2 (bot.get_guild): Trying GUILD_ID={GUILD_ID}")
-                if GUILD_ID > 0:
-                    guild = bot.get_guild(GUILD_ID)
-                    print(f"   bot.get_guild returned: {guild is not None}")
-                    if guild:
-                        channel = guild.get_channel(TODO_CHANNEL_ID)
-                        print(f"   Channel found: {channel is not None}")
-                        if channel:
-                            await channel.send(embed=embed)
-                            sent = True
-                            print(f"✅ ATODO sent to channel via bot.get_guild")
-            except Exception as e:
-                print(f"⚠️ Method 2 failed: {type(e).__name__}: {str(e)}")
-        
-        if not sent:
-            print(f"❌ FAILED to send ATODO to any channel!")
+        # Send to channel using helper function
+        await send_todo_to_channel(embed, source="AtodoModal")
         
         await interaction.followup.send(f"✅ TODO submitted for {self.target.mention}!", ephemeral=True)
 
