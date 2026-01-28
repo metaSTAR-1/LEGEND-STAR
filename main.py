@@ -886,8 +886,20 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         uid = str(interaction.user.id)
-        if not safe_find_one(active_members_coll, {"_id": uid}) and interaction.user.id != OWNER_ID:
-            await interaction.followup.send("Not authorized (not in active list).", ephemeral=True)
+        print(f"\n{'='*70}")
+        print(f"📝 [TODO SUBMIT] User: {interaction.user.name}#{interaction.user.discriminator}")
+        print(f"   User ID: {interaction.user.id}")
+        print(f"   UID String: {uid}")
+        print(f"   Is Owner: {interaction.user.id == OWNER_ID}")
+        
+        # Check if user is in active members list
+        user_doc = safe_find_one(active_members_coll, {"_id": uid})
+        print(f"   Active Members lookup: {user_doc}")
+        print(f"{'='*70}\n")
+        
+        if not user_doc and interaction.user.id != OWNER_ID:
+            print(f"❌ User {uid} not authorized - not in active list and not owner")
+            await interaction.followup.send("❌ Not authorized (not in active list).", ephemeral=True)
             return
         
         # Save to database
@@ -1213,20 +1225,36 @@ async def addh(interaction: discord.Interaction, userid: str):
             return await interaction.followup.send("❌ Invalid ID format (must be numeric)", ephemeral=True)
         
         user_id = int(userid)
+        user_id_str = str(userid)
+        
+        print(f"\n{'='*70}")
+        print(f"🔧 [/ADDH] Adding user to TODO system")
+        print(f"   Input userid: {userid} (type: {type(userid).__name__})")
+        print(f"   user_id int: {user_id}")
+        print(f"   user_id_str: {user_id_str}")
         
         # Try to get member from guild
         guild = interaction.guild
         member = guild.get_member(user_id) if guild else None
+        print(f"   Guild: {guild.name if guild else 'None'}")
+        print(f"   Member found: {member.name if member else 'None'}")
         
-        # Add to active members
-        safe_update_one(active_members_coll, {"_id": userid}, {
+        # Add to active members - use STRING format like the todo check expects
+        result = safe_update_one(active_members_coll, {"_id": user_id_str}, {
             "$set": {
                 "added": datetime.datetime.now(KOLKATA),
-                "name": member.display_name if member else f"User {userid}"
+                "name": member.display_name if member else f"User {user_id}",
+                "user_id": user_id  # Also store as int for reference
             }
         })
+        print(f"   Database update result: {result}")
         
-        member_name = member.mention if member else f"`{userid}`"
+        # Verify it was actually saved
+        verify = safe_find_one(active_members_coll, {"_id": user_id_str})
+        print(f"   Verification lookup by '{user_id_str}': {verify}")
+        print(f"{'='*70}\n")
+        
+        member_name = member.mention if member else f"`{user_id}`"
         await interaction.followup.send(f"✅ Added {member_name} to TODO system", ephemeral=True)
         
         # Log to channel
@@ -1234,12 +1262,15 @@ async def addh(interaction: discord.Interaction, userid: str):
             channel = guild.get_channel(TODO_CHANNEL_ID)
             if channel:
                 try:
-                    await channel.send(f"✅ {member.mention if member else f'`{userid}`'} added to TODO system")
-                except:
-                    pass
+                    msg = f"✅ {member.mention if member else f'`{user_id}`'} added to TODO system (can now use `/todo`)"
+                    await channel.send(msg)
+                except Exception as e:
+                    print(f"⚠️ Failed to log to channel: {e}")
     except Exception as e:
         await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
         print(f"⚠️ /addh error: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 @tree.command(name="remh", description="Remove a user from todo system", guild=GUILD)
 @app_commands.describe(userid="User ID (numeric)")
@@ -1254,15 +1285,34 @@ async def remh(interaction: discord.Interaction, userid: str):
             return await interaction.followup.send("❌ Invalid ID format (must be numeric)", ephemeral=True)
         
         user_id = int(userid)
+        user_id_str = str(userid)
+        
+        print(f"\n{'='*70}")
+        print(f"🔧 [/REMH] Removing user from TODO system")
+        print(f"   Input userid: {userid} (type: {type(userid).__name__})")
+        print(f"   user_id int: {user_id}")
+        print(f"   user_id_str: {user_id_str}")
         
         # Try to get member from guild
         guild = interaction.guild
         member = guild.get_member(user_id) if guild else None
+        print(f"   Guild: {guild.name if guild else 'None'}")
+        print(f"   Member found: {member.name if member else 'None'}")
+        
+        # Check if user exists before removing
+        existing = safe_find_one(active_members_coll, {"_id": user_id_str})
+        print(f"   Found in database: {existing}")
         
         # Remove from active members
-        safe_delete_one(active_members_coll, {"_id": userid})
+        safe_delete_one(active_members_coll, {"_id": user_id_str})
+        print(f"   Deletion executed")
         
-        member_name = member.mention if member else f"`{userid}`"
+        # Verify it was actually removed
+        verify = safe_find_one(active_members_coll, {"_id": user_id_str})
+        print(f"   Verification after delete: {verify}")
+        print(f"{'='*70}\n")
+        
+        member_name = member.mention if member else f"`{user_id}`"
         await interaction.followup.send(f"✅ Removed {member_name} from TODO system", ephemeral=True)
         
         # Log to channel
@@ -1270,12 +1320,15 @@ async def remh(interaction: discord.Interaction, userid: str):
             channel = guild.get_channel(TODO_CHANNEL_ID)
             if channel:
                 try:
-                    await channel.send(f"❌ {member.mention if member else f'`{userid}`'} removed from TODO system")
-                except:
-                    pass
+                    msg = f"❌ {member.mention if member else f'`{user_id}`'} removed from TODO system (can no longer use `/todo`)"
+                    await channel.send(msg)
+                except Exception as e:
+                    print(f"⚠️ Failed to log to channel: {e}")
     except Exception as e:
         await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
         print(f"⚠️ /remh error: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 @tree.command(name="members", description="List all allowed members", guild=GUILD)
 async def members(interaction: discord.Interaction):
@@ -1296,6 +1349,47 @@ async def members(interaction: discord.Interaction):
         await interaction.followup.send(msg, ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
+
+@tree.command(name="tododebug", description="Debug TODO system (Owner only)", guild=GUILD)
+async def tododebug(interaction: discord.Interaction):
+    """Debug command to check TODO system status"""
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if interaction.user.id != OWNER_ID:
+            return await interaction.followup.send("Owner only", ephemeral=True)
+        
+        user_id_str = str(interaction.user.id)
+        
+        # Check if user is in active members
+        user_doc = safe_find_one(active_members_coll, {"_id": user_id_str})
+        
+        # Get all active members
+        all_members = safe_find(active_members_coll, {})
+        
+        msg = f"""
+🔍 **TODO System Debug Info**
+
+**Your Info:**
+- Your ID (int): {interaction.user.id}
+- Your ID (str): {user_id_str}
+- In active_members: {user_doc is not None}
+
+**All Active Members ({len(all_members)}):**
+"""
+        for doc in all_members:
+            msg += f"\n- ID: `{doc['_id']}` | Name: {doc.get('name', 'Unknown')}"
+        
+        # Show collection stats
+        all_todo = safe_find(todo_coll, {})
+        msg += f"\n\n**TODO Submissions ({len(all_todo)}):**"
+        for doc in all_todo:
+            msg += f"\n- ID: `{doc['_id']}` | Name: {doc.get('todo', {}).get('name', 'Unknown')}"
+        
+        await interaction.followup.send(msg[:2000], ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+        import traceback
+        traceback.print_exc()
 
 # ==================== SECURITY FIREWALLS ====================
 @bot.event
