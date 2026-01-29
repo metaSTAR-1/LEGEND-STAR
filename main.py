@@ -1299,23 +1299,23 @@ async def atodo(interaction: discord.Interaction, user: discord.Member):
         return await interaction.response.send_message("Owner only", ephemeral=True)
     await interaction.response.send_modal(AtodoModal(user))
 
-@tasks.loop(hours=5)
+@tasks.loop(hours=3)
 async def todo_checker():
     """
     🔥 ADVANCED TODO PING SYSTEM 🔥
     
     - Monitors all users with TODO role
-    - If user participates but doesn't share TODO in last 24 hours → PING every 5 hours
-    - Ping only happens ONCE per 5-hour cycle (not spam)
+    - If user participates but doesn't share TODO in last 24 hours → PING every 3 hours
+    - Ping only happens ONCE per 3-hour cycle (no spam guaranteed)
     - Auto-reset ping timer when user shares /todo or /atodo
     - Removes role after 5 days of inactivity
-    - Starts 5 hours after bot startup (no pings on deployment)
+    - Smart startup: respects database timestamps on deployment
     
     MongoDB Schema:
     {
         "_id": "user_id",
         "last_submit": timestamp,
-        "last_ping": timestamp,  // NEW: Track last ping to avoid spam
+        "last_ping": timestamp,  // Track last ping to prevent spam
         "todo": {...}
     }
     """
@@ -1333,7 +1333,7 @@ async def todo_checker():
     now = time.time()
     one_day = 24 * 3600       # 24 hours
     five_days = 5 * 86400     # 5 days for role removal
-    five_hours = 5 * 3600     # 5 hours between pings (CHANGED FROM 3)
+    three_hours = 3 * 3600    # 3 hours between pings (PRIMARY INTERVAL)
     
     print(f"\n⏰ [TODO_CHECKER] Running advanced TODO verification @ {datetime.datetime.now(KOLKATA).strftime('%H:%M:%S')}")
     
@@ -1376,14 +1376,15 @@ async def todo_checker():
                         print(f"⚠️ Failed to remove role: {e}")
             
             # ============================================================
-            # LEVEL 2: Check for 24-hour inactivity (PING - But only once per 5 hours!)
+            # LEVEL 2: Check for 24-hour inactivity (PING - But only once per 3 hours!)
             # ============================================================
             elif elapsed_since_submit >= one_day:
-                # Check if we've already pinged in the last 5 hours
-                if elapsed_since_ping < five_hours:
+                # Check if we've already pinged in the last 3 hours
+                if elapsed_since_ping < three_hours:
                     # Already pinged recently, skip
-                    hours_until_next_ping = int((five_hours - elapsed_since_ping) / 3600) + 1
-                    print(f"⏭️  [TODO_CHECKER] {member.display_name} already pinged ({hours_until_next_ping}h until next)")
+                    hours_until_next_ping = int((three_hours - elapsed_since_ping) / 3600) + 1
+                    minutes_until_next_ping = int(((three_hours - elapsed_since_ping) % 3600) / 60)
+                    print(f"⏭️  [TODO_CHECKER] {member.display_name} already pinged ({hours_until_next_ping}h {minutes_until_next_ping}m until next)")
                     continue
                 
                 # ✅ IT'S TIME TO PING!
@@ -1415,7 +1416,7 @@ async def todo_checker():
                 )
                 channel_embed.add_field(
                     name="⚠️ Note",
-                    value="This reminder runs every 5 hours until you submit",
+                    value="This reminder runs every 3 hours until you submit",
                     inline=False
                 )
                 
@@ -1463,7 +1464,7 @@ async def todo_checker():
                         "last_ping": now  # Record when we pinged them
                     }
                 })
-                print(f"✅ Database updated - next ping in 3 hours")
+                print(f"✅ Database updated - next ping in ~3 hours")
                 
             else:
                 # User is within 24-hour limit, no action needed
@@ -1478,12 +1479,24 @@ async def todo_checker():
 @todo_checker.before_loop
 async def before_todo_checker():
     """
-    ⏱️ STARTUP DELAY - Wait 5 hours before first ping check
-    This prevents spam pings when bot restarts/deploys
+    🚀 SMART STARTUP BEHAVIOR
+    
+    On deployment:
+    1. Wait for bot to be ready (20 sec buffer)
+    2. Run first check IMMEDIATELY (respects last_ping in database)
+    3. Subsequent checks follow 3-hour interval
+    
+    Result: Pings follow database timestamps, no artificial delay blocking users
     """
-    print("⏰ [TODO_CHECKER] Startup delay: waiting 5 hours before first check...")
-    await asyncio.sleep(5 * 3600)  # 5 hours = 18000 seconds
-    print("✅ [TODO_CHECKER] 5-hour startup delay complete! Starting checks now.")
+    print("⏰ [TODO_CHECKER] Bot startup: waiting for Discord connection...")
+    await bot.wait_until_ready()
+    
+    # Give Discord API time to stabilize (20 second buffer)
+    await asyncio.sleep(20)
+    
+    print("✅ [TODO_CHECKER] Ready! First TODO check will run immediately.")
+    print("📊 [TODO_CHECKER] Subsequent checks every 3 hours.")
+    print("🎯 [TODO_CHECKER] Pings respect database last_ping timestamps (no spam!)")
 
 @tree.command(name="listtodo", description="View your current todo", guild=GUILD)
 async def listtodo(interaction: discord.Interaction):
@@ -1925,13 +1938,53 @@ async def on_message(message: discord.Message):
         await punish_human(message, "Advertising") # -> Calls the Brain
         return
     
-    # Forward DMs
-    if isinstance(message.channel, discord.DMChannel) and message.author.id != OWNER_ID:
-        tech_channel = bot.get_channel(TECH_CHANNEL_ID)
-        if tech_channel:
-            embed = discord.Embed(title=f"📩 DM from {message.author}", description=message.content[:2000], color=discord.Color.blue())
-            embed.set_footer(text=f"ID: {message.author.id}")
-            await tech_channel.send(embed=embed)
+    # ============================================================
+    # 📩 FORWARD DMs & BOT MENTIONS TO OWNER
+    # ============================================================
+    
+    # Check if this is a DM or bot mention
+    is_dm = isinstance(message.channel, discord.DMChannel) and message.author.id != OWNER_ID
+    is_bot_mention = bot.user in message.mentions and not isinstance(message.channel, discord.DMChannel)
+    
+    if is_dm or is_bot_mention:
+        try:
+            owner = bot.get_user(OWNER_ID)
+            if owner:
+                # Build rich embed with context
+                if is_dm:
+                    embed_title = f"📩 DM from {message.author}"
+                    embed_color = discord.Color.blue()
+                    location = "Direct Message"
+                else:
+                    embed_title = f"🔔 Bot Mention from {message.author}"
+                    embed_color = discord.Color.gold()
+                    location = f"#{message.channel.name}" if hasattr(message.channel, 'name') else "Server"
+                
+                embed = discord.Embed(
+                    title=embed_title,
+                    description=message.content[:2000] if message.content else "*[No text, attachments only]*",
+                    color=embed_color
+                )
+                embed.add_field(name="Location", value=location, inline=True)
+                embed.add_field(name="User ID", value=message.author.id, inline=True)
+                
+                if message.guild:
+                    embed.add_field(name="Server", value=message.guild.name, inline=True)
+                
+                # Add attachment info
+                if message.attachments:
+                    attachments_info = "\n".join([f"📎 {att.filename} ({att.size} bytes)" for att in message.attachments])
+                    embed.add_field(name="Attachments", value=attachments_info, inline=False)
+                
+                embed.set_author(name=f"{message.author.name}#{message.author.discriminator}", icon_url=message.author.avatar.url if message.author.avatar else None)
+                embed.set_footer(text=f"Timestamp: {message.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                
+                # Send to owner
+                await owner.send(embed=embed)
+                print(f"✅ [FORWARD] {'DM' if is_dm else 'Mention'} from {message.author.name} → Owner")
+        except Exception as e:
+            print(f"⚠️ [FORWARD ERROR] Failed to forward {'DM' if is_dm else 'mention'}: {e}")
+    
     await bot.process_commands(message)
 
 @tasks.loop(minutes=1)
