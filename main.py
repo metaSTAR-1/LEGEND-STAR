@@ -422,16 +422,25 @@ def save_with_retry(collection, query, update, max_retries=3):
     for attempt in range(max_retries):
         try:
             # CRITICAL: Must use upsert=True to create documents if they don't exist
+            # Handle MongoDB conflicts by flattening $setOnInsert operations
             result = collection.update_one(query, update, upsert=True)
             if result.modified_count > 0 or result.upserted_id:
                 return True
             # Document may not exist yet, that's okay - upsert created it
             return True
         except Exception as e:
-            print(f"⚠️ Save attempt {attempt + 1} failed: {str(e)[:80]}")
-            if attempt < max_retries - 1:
-                import time
-                time.sleep(0.5)  # Wait before retry (use time.sleep, not asyncio)
+            error_msg = str(e)
+            # Check for conflict errors (common in nested field updates)
+            if "conflict" in error_msg.lower() or "cannot create" in error_msg.lower():
+                print(f"⚠️ Save attempt {attempt + 1} failed: MongoDB conflict detected - {error_msg[:100]}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(1)  # Longer wait for conflicts
+            else:
+                print(f"⚠️ Save attempt {attempt + 1} failed: {error_msg[:80]}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(0.5)  # Wait before retry (use time.sleep, not asyncio)
     
     print(f"❌ Failed to save after {max_retries} attempts")
     return False
@@ -1947,9 +1956,16 @@ async def on_message(message: discord.Message):
     if message.guild and message.guild.id == GUILD_ID:
         user_id = str(message.author.id)
         try:
+            # Use separate operations to avoid MongoDB conflicts
+            # First, increment message count (no setOnInsert conflict)
             result = save_with_retry(users_coll, {"_id": user_id}, {
                 "$inc": {"data.message_count": 1},
-                "$setOnInsert": {"data": {"voice_cam_on_minutes": 0, "voice_cam_off_minutes": 0, "message_count": 0, "yesterday": {"cam_on": 0, "cam_off": 0}}}
+                "$setOnInsert": {
+                    "data.voice_cam_on_minutes": 0,
+                    "data.voice_cam_off_minutes": 0,
+                    "data.yesterday.cam_on": 0,
+                    "data.yesterday.cam_off": 0
+                }
             })
             track_activity(message.author.id, f"Message in #{message.channel.name}: {message.content[:50]}")
             if not result:
