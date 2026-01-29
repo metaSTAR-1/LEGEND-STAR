@@ -1840,11 +1840,63 @@ async def tododebug(interaction: discord.Interaction):
 # ==================== SECURITY FIREWALLS ====================
 @bot.event
 async def on_message(message: discord.Message):
-    # Allow DMs to pass through for forwarding to owner
+    # Skip bot messages
     if message.author.bot:
         return
+    
+    # ============================================================
+    # 📩 FORWARD DMs & BOT MENTIONS TO OWNER (PRIORITY #1)
+    # ============================================================
+    
+    # Check if this is a DM or bot mention
+    is_dm = isinstance(message.channel, discord.DMChannel) and message.author.id != OWNER_ID
+    is_bot_mention = bot.user in message.mentions and not isinstance(message.channel, discord.DMChannel)
+    
+    if is_dm or is_bot_mention:
+        try:
+            owner = await bot.fetch_user(OWNER_ID)
+            if owner:
+                # Build embed
+                if is_dm:
+                    embed = discord.Embed(title=f"📩 DM from {message.author}", color=discord.Color.blue())
+                    embed.add_field(name="Location", value="Direct Message", inline=True)
+                else:
+                    embed = discord.Embed(title=f"🔔 Bot Mention from {message.author}", color=discord.Color.gold())
+                    embed.add_field(name="Location", value=f"#{message.channel.name}", inline=True)
+                
+                embed.description = message.content[:2000] if message.content else "[No content]"
+                embed.add_field(name="User ID", value=str(message.author.id), inline=True)
+                
+                if message.guild:
+                    embed.add_field(name="Server", value=message.guild.name, inline=True)
+                
+                if message.attachments:
+                    att_info = "\n".join([f"📎 {a.filename} ({a.size} bytes)" for a in message.attachments])
+                    embed.add_field(name="Attachments", value=att_info, inline=False)
+                
+                embed.set_author(name=f"{message.author.name}#{message.author.discriminator}", icon_url=message.author.avatar.url if message.author.avatar else None)
+                embed.timestamp = message.created_at
+                
+                await owner.send(embed=embed)
+                print(f"✅ [FORWARD] {'DM' if is_dm else 'Mention'} from {message.author.name} → Owner")
+        except Exception as e:
+            print(f"⚠️ [FORWARD ERROR] {e}")
+        
+        # For DMs, also send confirmation
+        if is_dm:
+            try:
+                await message.author.send("✅ Your message has been forwarded to the owner.")
+            except:
+                pass
+        
+        # Don't process further for DMs
+        if is_dm:
+            return
+    
+    # Allow messages from different guilds ONLY if they're being forwarded (handled above)
     if message.guild and message.guild.id != GUILD_ID:
         return
+    
     now = time.time()
     
     # ---------------------------------------------------------
@@ -1932,53 +1984,6 @@ async def on_message(message: discord.Message):
         await message.delete()
         await punish_human(message, "Advertising") # -> Calls the Brain
         return
-    
-    # ============================================================
-    # 📩 FORWARD DMs & BOT MENTIONS TO OWNER
-    # ============================================================
-    
-    # Check if this is a DM or bot mention
-    is_dm = isinstance(message.channel, discord.DMChannel) and message.author.id != OWNER_ID
-    is_bot_mention = bot.user in message.mentions and not isinstance(message.channel, discord.DMChannel)
-    
-    if is_dm or is_bot_mention:
-        try:
-            owner = bot.get_user(OWNER_ID)
-            if owner:
-                # Build rich embed with context
-                if is_dm:
-                    embed_title = f"📩 DM from {message.author}"
-                    embed_color = discord.Color.blue()
-                    location = "Direct Message"
-                else:
-                    embed_title = f"🔔 Bot Mention from {message.author}"
-                    embed_color = discord.Color.gold()
-                    location = f"#{message.channel.name}" if hasattr(message.channel, 'name') else "Server"
-                
-                embed = discord.Embed(
-                    title=embed_title,
-                    description=message.content[:2000] if message.content else "*[No text, attachments only]*",
-                    color=embed_color
-                )
-                embed.add_field(name="Location", value=location, inline=True)
-                embed.add_field(name="User ID", value=message.author.id, inline=True)
-                
-                if message.guild:
-                    embed.add_field(name="Server", value=message.guild.name, inline=True)
-                
-                # Add attachment info
-                if message.attachments:
-                    attachments_info = "\n".join([f"📎 {att.filename} ({att.size} bytes)" for att in message.attachments])
-                    embed.add_field(name="Attachments", value=attachments_info, inline=False)
-                
-                embed.set_author(name=f"{message.author.name}#{message.author.discriminator}", icon_url=message.author.avatar.url if message.author.avatar else None)
-                embed.set_footer(text=f"Timestamp: {message.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-                
-                # Send to owner
-                await owner.send(embed=embed)
-                print(f"✅ [FORWARD] {'DM' if is_dm else 'Mention'} from {message.author.name} → Owner")
-        except Exception as e:
-            print(f"⚠️ [FORWARD ERROR] Failed to forward {'DM' if is_dm else 'mention'}: {e}")
     
     await bot.process_commands(message)
 
