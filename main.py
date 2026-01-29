@@ -1106,466 +1106,260 @@ async def send_todo_to_channel(embed: discord.Embed, source: str = "TodoModal"):
         print(f"{'='*70}\n")
         return False
 
+
 # ==================== TODO SYSTEM ====================
-class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
-    """
-    Advanced TODO Modal with:
-    - Name field
-    - Date field (DD/MM/YYYY)
-    - Must Do, Can Do, Don't Do (text input - can be N/A if will upload file)
-    - Support for both text AND attachment-based submission
-    """
-    name = discord.ui.TextInput(label="Feature Name (Required)", required=True, min_length=2)
-    date = discord.ui.TextInput(label="Date (DD/MM/YYYY)", required=True, min_length=10)
-    must_do = discord.ui.TextInput(label="Must Do (Text or 'Attaching file')", style=discord.TextStyle.paragraph, required=False)
-    can_do = discord.ui.TextInput(label="Can Do (Text or 'Attaching file')", style=discord.TextStyle.paragraph, required=False)
-    dont_do = discord.ui.TextInput(label="Don't Do (Text or 'Attaching file')", style=discord.TextStyle.paragraph, required=False)
+# Simple command-based TODO with direct attachment support
+
+@tree.command(name="todo", description="Submit daily TODO with tasks and file", guild=GUILD)
+@app_commands.describe(
+    feature="Feature name (required)",
+    date="Date DD/MM/YYYY",
+    must_do="Must Do tasks",
+    can_do="Can Do tasks",
+    dont_do="Don't Do restrictions",
+    attachment="File/Screenshot (max 8MB)"
+)
+async def todo(
+    interaction: discord.Interaction,
+    feature: str,
+    date: str,
+    attachment: discord.Attachment = None,
+    must_do: str = None,
+    can_do: str = None,
+    dont_do: str = None
+):
+    """Submit daily TODO with feature name, date, and categories"""
+    await interaction.response.defer()
     
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.attachment_url = None
-        self.attachment_filename = None
-        self.attachment_file_type = None  # 'image', 'document', etc.
-        self.submitted_at = None
-
-    async def on_submit(self, interaction: discord.Interaction):
-        """
-        Process TODO form submission
-        Handles both text and attachment-based TODO entries
-        """
-        try:
-            await interaction.response.defer(ephemeral=True)
-            uid = str(interaction.user.id)
-            self.submitted_at = datetime.datetime.now(tz=KOLKATA)
-            
-            print(f"\n{'='*80}")
-            print(f"📝 [TODO SUBMIT] User: {interaction.user.name}#{interaction.user.discriminator}")
-            print(f"   User ID: {interaction.user.id}")
-            print(f"   Feature: {self.name.value}")
-            print(f"   Date: {self.date.value}")
-            print(f"   Has Must Do: {bool(self.must_do.value.strip())}")
-            print(f"   Has Can Do: {bool(self.can_do.value.strip())}")
-            print(f"   Has Don't Do: {bool(self.dont_do.value.strip())}")
-            print(f"   Has Attachment: {bool(self.attachment_url)}")
-            
-            # Check if user is in active members list
-            user_doc = safe_find_one(active_members_coll, {"_id": uid})
-            print(f"   Active Members: {bool(user_doc)}")
-            print(f"{'='*80}\n")
-            
-            if not user_doc and interaction.user.id != OWNER_ID:
-                await interaction.followup.send(
-                    "❌ **Not Authorized**\n"
-                    "You must be in the active members list to submit TODOs.\n"
-                    "Contact the owner for access.",
-                    ephemeral=True
-                )
-                return
-            
-            # Validate date format
-            try:
-                datetime.datetime.strptime(self.date.value, "%d/%m/%Y")
-            except ValueError:
-                await interaction.followup.send(
-                    "❌ **Invalid Date Format**\n"
-                    "Please use DD/MM/YYYY format (e.g., 29/01/2026)",
-                    ephemeral=True
-                )
-                return
-            
-            # Build TODO data with both text and attachment support
-            print(f"💾 [TODO] Building TODO data...")
-            todo_data = {
-                "feature_name": self.name.value.strip(),
-                "date": self.date.value,
-                "must_do": self.must_do.value.strip() or "N/A",
-                "can_do": self.can_do.value.strip() or "N/A",
-                "dont_do": self.dont_do.value.strip() or "N/A",
-                "submission_type": "text+attachment" if self.attachment_url else "text_only"
-            }
-            
-            # Add attachment metadata if available
-            if self.attachment_url:
-                todo_data["attachment"] = {
-                    "url": self.attachment_url,
-                    "filename": self.attachment_filename,
-                    "file_type": self.attachment_file_type or "image",
-                    "uploaded_at": self.submitted_at.isoformat()
-                }
-                print(f"📎 Attachment: {self.attachment_filename} ({self.attachment_file_type})")
-            
-            # Save to database
-            print(f"⏸️  [TODO] Saving to MongoDB...")
-            safe_update_one(todo_coll, {"_id": uid}, {"$set": {
-                "last_submit": time.time(),
-                "last_ping": 0,  # RESET PING TIMER
-                "todo": todo_data
-            }})
-            print(f"✅ [TODO] Database save complete!")
-            
-            # Create rich embed with both text and attachment
-            print(f"🎨 [TODO] Creating embed...")
-            embed = discord.Embed(
-                title=f"✅ TODO: {self.name.value}",
-                color=discord.Color.green(),
-                timestamp=self.submitted_at
-            )
-            
-            # User info
-            embed.add_field(name="👤 Submitted By", value=interaction.user.mention, inline=False)
-            embed.add_field(name="📅 Date", value=self.date.value, inline=True)
-            
-            # Task fields
-            embed.add_field(
-                name="✔️ Must Do",
-                value=self.must_do.value.strip() or "*(Not specified)*",
-                inline=False
-            )
-            embed.add_field(
-                name="🎯 Can Do",
-                value=self.can_do.value.strip() or "*(Not specified)*",
-                inline=False
-            )
-            embed.add_field(
-                name="❌ Don't Do",
-                value=self.dont_do.value.strip() or "*(Not specified)*",
-                inline=False
-            )
-            
-            # Attachment section if present
-            if self.attachment_url:
-                file_type_emoji = "🖼️" if "image" in (self.attachment_file_type or "").lower() else "📄"
-                embed.add_field(
-                    name=f"{file_type_emoji} Attachment",
-                    value=f"[{self.attachment_filename}]({self.attachment_url})",
-                    inline=False
-                )
-                # Set image for image files
-                if "image" in (self.attachment_file_type or "").lower():
-                    embed.set_image(url=self.attachment_url)
-            
-            embed.set_footer(text=f"User ID: {interaction.user.id} | Status: Submitted")
-            print(f"✅ [TODO] Embed created successfully")
-            
-            # Send to channel
-            print(f"\n📤 [TODO] Sending to channel...")
-            print(f"   Guild ID: {GUILD_ID}, Channel ID: {TODO_CHANNEL_ID}")
-            
-            guild = bot.get_guild(GUILD_ID) or (await bot.fetch_guild(GUILD_ID) if GUILD_ID else None)
-            if guild:
-                channel = guild.get_channel(TODO_CHANNEL_ID) or (await guild.fetch_channel(TODO_CHANNEL_ID) if TODO_CHANNEL_ID else None)
-                if channel:
-                    await channel.send(embed=embed)
-                    print(f"✅✅✅ TODO SENT TO CHANNEL SUCCESSFULLY! ✅✅✅\n")
-                else:
-                    print(f"❌ Channel {TODO_CHANNEL_ID} not found")
-            else:
-                print(f"❌ Guild {GUILD_ID} not found")
-            
-            # Show post-submission options
-            view = TodoAttachmentView(self, interaction.user.id)
-            embed_confirm = discord.Embed(
-                title="✅ TODO Submitted Successfully!",
-                description="Your TODO has been posted to the channel.",
-                color=discord.Color.green()
-            )
-            embed_confirm.add_field(
-                name="📋 Summary",
-                value=f"**Feature**: {self.name.value}\n**Date**: {self.date.value}\n**Attachment**: {'Yes ✅' if self.attachment_url else 'No ❌'}",
-                inline=False
-            )
-            
-            if not self.attachment_url:
-                embed_confirm.add_field(
-                    name="📸 Add Attachment Later?",
-                    value="Click the button below to upload a screenshot or document as evidence",
-                    inline=False
-                )
-                await interaction.followup.send(embed=embed_confirm, view=view, ephemeral=True)
-            else:
-                embed_confirm.set_field_at(0, name="📋 Summary", value=f"**Feature**: {self.name.value}\n**Date**: {self.date.value}\n**Attachment**: ✅ {self.attachment_filename}", inline=False)
-                await interaction.followup.send(embed=embed_confirm, ephemeral=True)
-            
-        except Exception as e:
-            print(f"\n❌ CRITICAL ERROR in TodoModal.on_submit: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
-            try:
-                await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
-            except:
-                pass
-
-
-class TodoAttachmentView(discord.ui.View):
-    """
-    Advanced attachment view for TODO submissions
-    - Handles file uploads (images, documents)
-    - Validates file types and sizes
-    - Updates MongoDB with attachment data
-    - Sends updated embed to channel
-    """
+    uid = str(interaction.user.id)
     
-    SUPPORTED_FORMATS = {
-        'image': ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'],
-        'document': ['pdf', 'txt', 'doc', 'docx', 'xlsx', 'csv']
+    # Auth check
+    if not safe_find_one(active_members_coll, {"_id": uid}) and interaction.user.id != OWNER_ID:
+        await interaction.followup.send("❌ Not authorized", ephemeral=True)
+        return
+    
+    # Date validation
+    try:
+        date_obj = datetime.datetime.strptime(date, "%d/%m/%Y")
+    except ValueError:
+        await interaction.followup.send(f"❌ Invalid date. Use DD/MM/YYYY format", ephemeral=True)
+        return
+    
+    # Content check
+    if not any([must_do, can_do, dont_do]) and not attachment:
+        await interaction.followup.send("❌ Provide content or attachment", ephemeral=True)
+        return
+    
+    # Validate attachment if provided
+    attachment_data = None
+    if attachment:
+        # Size check
+        if attachment.size > 8 * 1024 * 1024:
+            await interaction.followup.send(f"❌ File too large (max 8MB)", ephemeral=True)
+            return
+        
+        # Type check
+        ext = attachment.filename.rsplit('.', 1)[-1].lower() if '.' in attachment.filename else ''
+        valid_exts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'pdf', 'txt', 'doc', 'docx', 'xlsx', 'ppt', 'pptx', 'csv']
+        
+        if ext not in valid_exts:
+            await interaction.followup.send(f"❌ File type not supported", ephemeral=True)
+            return
+        
+        # Detect type
+        file_type = 'image' if ext in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff'] else 'document'
+        
+        attachment_data = {
+            "url": attachment.url,
+            "filename": attachment.filename,
+            "file_type": file_type,
+            "uploaded_at": datetime.datetime.now(KOLKATA).isoformat()
+        }
+    
+    # Save to DB
+    now = datetime.datetime.now(tz=KOLKATA)
+    todo_data = {
+        "feature_name": feature,
+        "date": date,
+        "must_do": must_do or "N/A",
+        "can_do": can_do or "N/A",
+        "dont_do": dont_do or "N/A",
+        "submitted_at": now.isoformat()
     }
-    MAX_FILE_SIZE = 8 * 1024 * 1024  # 8 MB
+    if attachment_data:
+        todo_data["attachment"] = attachment_data
     
-    def __init__(self, modal_instance, user_id):
-        super().__init__(timeout=600)  # 10 minutes
-        self.modal_instance = modal_instance
-        self.user_id = user_id
+    safe_update_one(todo_coll, {"_id": uid}, {
+        "$set": {
+            "last_submit": time.time(),
+            "last_ping": 0,
+            "todo": todo_data,
+            "updated_at": now.isoformat()
+        }
+    })
     
-    def get_file_type(self, filename: str) -> str:
-        """Detect file type from extension"""
-        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
-        
-        if ext in self.SUPPORTED_FORMATS['image']:
-            return 'image'
-        elif ext in self.SUPPORTED_FORMATS['document']:
-            return 'document'
-        return 'unknown'
+    # Create embed for channel
+    embed = discord.Embed(title=f"📋 {feature}", color=discord.Color.from_rgb(0, 150, 255), timestamp=now)
+    embed.add_field(name="👤 By", value=interaction.user.mention, inline=False)
+    embed.add_field(name="📅 Date", value=date, inline=True)
     
-    @discord.ui.button(label="📸 Upload Screenshot", style=discord.ButtonStyle.primary, emoji="📸")
-    async def upload_attachment(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Upload screenshot or file attachment"""
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                "❌ Only the original submitter can manage attachments.",
-                ephemeral=True
-            )
-            return
-        
-        await interaction.response.send_message(
-            "📸 **Upload Your File**\n\n"
-            "**Instructions:**\n"
-            "1. Reply to this message\n"
-            "2. Click 📎 to attach a file\n"
-            "3. Select your screenshot or document\n\n"
-            "**Supported Formats:**\n"
-            "📷 Images: PNG, JPG, JPEG, GIF, WEBP (Max 8MB)\n"
-            "📄 Documents: PDF, TXT, DOCX, XLSX\n\n"
-            "⏰ You have 10 minutes to upload",
-            ephemeral=True
-        )
-        print(f"📸 [{interaction.user.name}] Requested file upload")
+    if must_do:
+        embed.add_field(name="✔️ MUST DO", value=f"```{must_do}```", inline=False)
+    if can_do:
+        embed.add_field(name="🎯 CAN DO", value=f"```{can_do}```", inline=False)
+    if dont_do:
+        embed.add_field(name="❌ DON'T DO", value=f"```{dont_do}```", inline=False)
     
-    @discord.ui.button(label="✅ Complete", style=discord.ButtonStyle.success)
-    async def complete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Mark TODO as complete"""
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                "❌ Only the original submitter can complete this.",
-                ephemeral=True
-            )
-            return
-        
-        await interaction.response.defer(ephemeral=True)
-        
-        # Create final summary
-        embed = discord.Embed(
-            title="✅ TODO Complete",
-            description=f"Feature: **{self.modal_instance.name.value}**",
-            color=discord.Color.green(),
-            timestamp=self.modal_instance.submitted_at
-        )
-        
-        embed.add_field(
-            name="📅 Date",
-            value=self.modal_instance.date.value,
-            inline=True
-        )
-        
-        embed.add_field(
-            name="✔️ Must Do",
-            value=self.modal_instance.must_do.value.strip() or "*(Not specified)*",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="🎯 Can Do",
-            value=self.modal_instance.can_do.value.strip() or "*(Not specified)*",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="❌ Don't Do",
-            value=self.modal_instance.dont_do.value.strip() or "*(Not specified)*",
-            inline=False
-        )
-        
-        if self.modal_instance.attachment_url:
-            embed.add_field(
-                name="📎 Attached File",
-                value=f"[{self.modal_instance.attachment_filename}]({self.modal_instance.attachment_url}) ✅",
-                inline=False
-            )
-            if self.modal_instance.attachment_file_type == 'image':
-                embed.set_image(url=self.modal_instance.attachment_url)
-        
-        embed.set_footer(text=f"Status: Complete | User: {interaction.user.id}")
-        
-        await interaction.followup.send(embed=embed, ephemeral=True)
-        print(f"✅ [{interaction.user.name}] TODO marked complete")
-
-@tree.command(name="todo", description="Submit daily TODO with feature name, date, and tasks (text or attachment)", guild=GUILD)
-async def todo(interaction: discord.Interaction):
-    """
-    Advanced TODO command
-    - Feature name (required)
-    - Date (DD/MM/YYYY)
-    - Must Do, Can Do, Don't Do (text OR upload file)
-    - Attachment upload support
-    """
-    print(f"\n🚀 [TODO] {interaction.user.name} opened TODO form")
-    modal = TodoModal()
-    await interaction.response.send_modal(modal)
+    if attachment_data:
+        emoji = "🖼️" if attachment_data['file_type'] == 'image' else "📄"
+        embed.add_field(name=f"{emoji} File", value=f"[{attachment.filename}]({attachment.url})", inline=False)
+        if attachment_data['file_type'] == 'image':
+            embed.set_image(url=attachment.url)
+    
+    embed.set_author(name=interaction.user.name, icon_url=interaction.user.avatar.url if interaction.user.avatar else None)
+    
+    # Send to TODO channel (PUBLIC)
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            channel = guild.get_channel(TODO_CHANNEL_ID)
+            if channel:
+                await channel.send(embed=embed)
+    except:
+        pass
+    
+    await interaction.followup.send("✅ TODO posted for everyone!")
 
 
-
-class AtodoModal(TodoModal):
-    def __init__(self, target: discord.Member):
-        super().__init__()
-        self.target = target
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        uid = str(self.target.id)
-        
-        try:
-            if not safe_find_one(active_members_coll, {"_id": uid}):
-                await interaction.followup.send("Target not in active list.", ephemeral=True)
-                return
-            
-            # Save to database (same as user submission)
-            print(f"⏸️ [ATODO] Saving to database...")
-            todo_data = {
-                "name": self.name.value,
-                "date": self.date.value,
-                "must_do": self.must_do.value or "N/A",
-                "can_do": self.can_do.value or "N/A",
-                "dont_do": self.dont_do.value or "N/A"
-            }
-            
-            # Add attachment info if available
-            if self.attachment_url:
-                todo_data["attachment"] = {
-                    "url": self.attachment_url,
-                    "filename": self.attachment_filename,
-                    "uploaded_at": datetime.datetime.now(tz=KOLKATA).isoformat()
-                }
-                print(f"📎 Attachment detected: {self.attachment_filename}")
-            
-            safe_update_one(todo_coll, {"_id": uid}, {"$set": {
-                "last_submit": time.time(),
-                "last_ping": 0,  # 🔥 RESET PING TIMER when owner submits - No more pings!
-                "todo": todo_data
-            }})
-            print(f"✅ [ATODO] Database save complete - Ping timer RESET!")
-            
-            # Create the embed
-            print(f"🎨 [ATODO] Creating embed...")
-            embed = discord.Embed(title="✅ TODO Submitted (By Owner)", color=discord.Color.gold())
-            embed.add_field(name="👤 For User", value=self.target.mention, inline=False)
-            embed.add_field(name="👨‍💼 Submitted By", value=interaction.user.mention, inline=False)
-            embed.add_field(name="📅 Date", value=self.date.value, inline=True)
-            embed.add_field(name="📝 Name", value=self.name.value, inline=True)
-            embed.add_field(name="✔️ Must Do", value=self.must_do.value or "N/A", inline=False)
-            embed.add_field(name="🎯 Can Do", value=self.can_do.value or "N/A", inline=False)
-            embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
-            
-            # Add attachment field if available
-            if self.attachment_url:
-                embed.add_field(
-                    name="📎 Attachment",
-                    value=f"[{self.attachment_filename}]({self.attachment_url})",
-                    inline=False
-                )
-                embed.set_image(url=self.attachment_url)
-            
-            embed.set_footer(text=f"Status: Submitted by Owner | Target: {self.target.id}")
-            print(f"✅ [ATODO] Embed created successfully")
-            
-            # Send to channel DIRECTLY
-            print(f"\n🔥 [ATODO] Attempting direct send to channel...")
-            print(f"🔥 Guild ID: {GUILD_ID}, Channel ID: {TODO_CHANNEL_ID}")
-            # First try get_guild (cached)
-            guild = bot.get_guild(GUILD_ID)
-            print(f"🔥 get_guild result: {guild}")
-            
-            # If not cached, fetch from API
-            if not guild:
-                print(f"🔥 Guild not in cache, fetching from API...")
-                guild = await bot.fetch_guild(GUILD_ID)
-                print(f"🔥 fetch_guild result: {guild}")
-            
-            if guild:
-                print(f"✅ Guild found: {guild.name}")
-                # Try get_channel first (cached)
-                channel = guild.get_channel(TODO_CHANNEL_ID)
-                print(f"🔥 get_channel result: {channel}")
-                
-                # If not cached, fetch from API
-                if not channel:
-                    print(f"🔥 Channel not in cache, fetching from API...")
-                    channel = await guild.fetch_channel(TODO_CHANNEL_ID)
-                    print(f"🔥 fetch_channel result: {channel}")
-                
-                if channel:
-                    print(f"✅ Channel found: {channel.name}")
-                    print(f"🔥 Sending message to channel...")
-                    await channel.send(embed=embed)
-                    print(f"✅✅✅ ATODO SENT SUCCESSFULLY! ✅✅✅")
-                else:
-                    print(f"❌ Channel not found after fetch")
-            else:
-                print(f"❌ Guild not found after fetch")
-                
-        except Exception as e:
-            print(f"❌ ERROR in ATODO submit: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
-        
-        # Show attachment option for owner
-        view = TodoAttachmentView(self, interaction.user.id)
-        await interaction.followup.send(
-            f"✅ TODO submitted for {self.target.mention}!\n\n"
-            "Would you like to add a screenshot/image as evidence?",
-            view=view,
-            ephemeral=True
-        )
-
-@tree.command(name="atodo", description="Submit todo on behalf of another user with optional screenshot", guild=GUILD)
-@app_commands.describe(user="Target user for TODO assignment")
-async def atodo(interaction: discord.Interaction, user: discord.Member):
-    """Owner-only command to submit TODO for another user with attachment support"""
+@tree.command(name="atodo", description="Assign TODO to user (Owner only)", guild=GUILD)
+@app_commands.describe(
+    user="Target user",
+    feature="Feature name",
+    date="Date DD/MM/YYYY",
+    must_do="Must Do tasks",
+    can_do="Can Do tasks",
+    dont_do="Don't Do restrictions",
+    attachment="File/Screenshot"
+)
+async def atodo(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    feature: str,
+    date: str,
+    attachment: discord.Attachment = None,
+    must_do: str = None,
+    can_do: str = None,
+    dont_do: str = None
+):
+    """Owner-only: Assign TODO to another user"""
+    await interaction.response.defer()
+    
+    # Owner check
     if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("❌ Owner only", ephemeral=True)
+        await interaction.followup.send("❌ Owner only", ephemeral=True)
+        return
     
-    print(f"🚀 [ATODO CMD] Owner {interaction.user.name} started ATODO form for {user.name}")
-    await interaction.response.send_modal(AtodoModal(user))
+    uid = str(user.id)
+    
+    # Target auth check
+    if not safe_find_one(active_members_coll, {"_id": uid}):
+        await interaction.followup.send(f"❌ {user.mention} not authorized", ephemeral=True)
+        return
+    
+    # Date validation
+    try:
+        date_obj = datetime.datetime.strptime(date, "%d/%m/%Y")
+    except ValueError:
+        await interaction.followup.send(f"❌ Invalid date", ephemeral=True)
+        return
+    
+    # Content check
+    if not any([must_do, can_do, dont_do]) and not attachment:
+        await interaction.followup.send("❌ Provide content", ephemeral=True)
+        return
+    
+    # Validate attachment
+    attachment_data = None
+    if attachment:
+        if attachment.size > 8 * 1024 * 1024:
+            await interaction.followup.send(f"❌ File too large", ephemeral=True)
+            return
+        
+        ext = attachment.filename.rsplit('.', 1)[-1].lower() if '.' in attachment.filename else ''
+        valid_exts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'txt', 'doc', 'docx', 'xlsx', 'ppt', 'pptx', 'csv']
+        
+        if ext not in valid_exts:
+            await interaction.followup.send(f"❌ File type not supported", ephemeral=True)
+            return
+        
+        file_type = 'image' if ext in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff'] else 'document'
+        
+        attachment_data = {
+            "url": attachment.url,
+            "filename": attachment.filename,
+            "file_type": file_type,
+            "uploaded_at": datetime.datetime.now(KOLKATA).isoformat()
+        }
+    
+    # Save to DB
+    now = datetime.datetime.now(tz=KOLKATA)
+    todo_data = {
+        "feature_name": feature,
+        "date": date,
+        "must_do": must_do or "N/A",
+        "can_do": can_do or "N/A",
+        "dont_do": dont_do or "N/A",
+        "submitted_at": now.isoformat(),
+        "submitted_by": interaction.user.name,
+        "submitted_by_id": interaction.user.id
+    }
+    if attachment_data:
+        todo_data["attachment"] = attachment_data
+    
+    safe_update_one(todo_coll, {"_id": uid}, {
+        "$set": {
+            "last_submit": time.time(),
+            "last_ping": 0,
+            "todo": todo_data,
+            "updated_at": now.isoformat()
+        }
+    })
+    
+    # Create embed - GOLD color for owner submission
+    embed = discord.Embed(title=f"📋 {feature}", color=discord.Color.from_rgb(255, 165, 0), timestamp=now)
+    embed.add_field(name="👤 Assigned To", value=user.mention, inline=False)
+    embed.add_field(name="👨‍💼 By Owner", value=interaction.user.mention, inline=False)
+    embed.add_field(name="📅 Date", value=date, inline=True)
+    
+    if must_do:
+        embed.add_field(name="✔️ MUST DO", value=f"```{must_do}```", inline=False)
+    if can_do:
+        embed.add_field(name="🎯 CAN DO", value=f"```{can_do}```", inline=False)
+    if dont_do:
+        embed.add_field(name="❌ DON'T DO", value=f"```{dont_do}```", inline=False)
+    
+    if attachment_data:
+        emoji = "🖼️" if attachment_data['file_type'] == 'image' else "📄"
+        embed.add_field(name=f"{emoji} File", value=f"[{attachment.filename}]({attachment.url})", inline=False)
+        if attachment_data['file_type'] == 'image':
+            embed.set_image(url=attachment.url)
+    
+    # Send to TODO channel (PUBLIC)
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            channel = guild.get_channel(TODO_CHANNEL_ID)
+            if channel:
+                await channel.send(embed=embed)
+    except:
+        pass
+    
+    await interaction.followup.send(f"✅ TODO assigned to {user.mention}!")
 
 
 @tasks.loop(hours=3)
 async def todo_checker():
-    """
-    🔥 ADVANCED TODO PING SYSTEM 🔥
-    
-    - Monitors all users with TODO role
-    - If user participates but doesn't share TODO in last 24 hours → PING every 3 hours
-    - Ping only happens ONCE per 3-hour cycle (no spam guaranteed)
-    - Auto-reset ping timer when user shares /todo or /atodo
-    - Removes role after 5 days of inactivity
-    - Smart startup: respects database timestamps on deployment
-    
-    MongoDB Schema:
-    {
-        "_id": "user_id",
-        "last_submit": timestamp,
-        "last_ping": timestamp,  // Track last ping to prevent spam
-        "todo": {...}
-    }
-    """
+    """Ping users who haven't submitted TODO in 24 hours"""
     if GUILD_ID <= 0:
         return
     
@@ -1578,223 +1372,132 @@ async def todo_checker():
         return
     
     now = time.time()
-    one_day = 24 * 3600       # 24 hours
-    five_days = 5 * 86400     # 5 days for role removal
-    three_hours = 3 * 3600    # 3 hours between pings (PRIMARY INTERVAL)
-    
-    print(f"\n⏰ [TODO_CHECKER] Running advanced TODO verification @ {datetime.datetime.now(KOLKATA).strftime('%H:%M:%S')}")
+    one_day = 24 * 3600
+    three_hours = 3 * 3600
+    five_days = 5 * 86400
     
     for doc in safe_find(todo_coll, {}):
         try:
             uid = int(doc["_id"])
-            last_submit = doc.get("last_submit", 0)
-            last_ping = doc.get("last_ping", 0)  # NEW: Track ping history
-            elapsed_since_submit = now - last_submit
-            elapsed_since_ping = now - last_ping
-            
             member = guild.get_member(uid)
             
-            # Skip bots and offline members
             if not member or member.bot:
-                print(f"⏭️  [TODO_CHECKER] Skipped {uid} (bot/offline)")
                 continue
             
-            # ============================================================
-            # LEVEL 1: Check for 5-day inactivity (REMOVE ROLE)
-            # ============================================================
-            if elapsed_since_submit >= five_days:
-                print(f"🔴 [TODO_CHECKER] {member.display_name} inactive for 5+ days")
+            last_submit = doc.get("last_submit", 0)
+            last_ping = doc.get("last_ping", 0)
+            elapsed = now - last_submit
+            
+            # Remove role if inactive 5+ days
+            if elapsed >= five_days:
                 role = guild.get_role(ROLE_ID)
                 if role and role in member.roles:
                     try:
                         await member.remove_roles(role)
-                        print(f"✅ Removed role from {member.display_name}")
-                        
-                        # Notify in channel
-                        embed = discord.Embed(
-                            title="❌ TODO Role Removed",
-                            description=f"{member.mention} has been inactive for **5+ days**",
-                            color=discord.Color.red()
-                        )
-                        embed.add_field(name="Action", value="Role removed. Use /todo to rejoin.", inline=False)
-                        await channel.send(embed=embed)
-                        
-                    except Exception as e:
-                        print(f"⚠️ Failed to remove role: {e}")
+                    except:
+                        pass
             
-            # ============================================================
-            # LEVEL 2: Check for 24-hour inactivity (PING - But only once per 3 hours!)
-            # ============================================================
-            elif elapsed_since_submit >= one_day:
-                # Check if we've already pinged in the last 3 hours
-                if elapsed_since_ping < three_hours:
-                    # Already pinged recently, skip
-                    hours_until_next_ping = int((three_hours - elapsed_since_ping) / 3600) + 1
-                    minutes_until_next_ping = int(((three_hours - elapsed_since_ping) % 3600) / 60)
-                    print(f"⏭️  [TODO_CHECKER] {member.display_name} already pinged ({hours_until_next_ping}h {minutes_until_next_ping}m until next)")
-                    continue
+            # Ping if inactive 24+ hours AND haven't pinged in 3+ hours
+            elif elapsed >= one_day and (now - last_ping) >= three_hours:
+                days = int(elapsed // 86400)
+                hours = int((elapsed % 86400) // 3600)
+                time_str = f"{days}d {hours}h" if days > 0 else f"{hours}h"
                 
-                # ✅ IT'S TIME TO PING!
-                days_inactive = int(elapsed_since_submit // 86400)
-                hours_inactive = int((elapsed_since_submit % 86400) // 3600)
-                time_str = f"{days_inactive}d {hours_inactive}h" if days_inactive > 0 else f"{hours_inactive}h"
-                
-                print(f"📢 [TODO_CHECKER] PINGING {member.display_name} (inactive for {time_str})")
-                
-                # ============================================================
-                # 🎯 SMART PING: Channel + DM (Redundant Coverage)
-                # ============================================================
-                
-                # Channel Ping (Public Accountability)
-                channel_embed = discord.Embed(
+                embed = discord.Embed(
                     title="⏰ TODO Reminder!",
-                    description=f"{member.mention}",
+                    description=f"{member.mention}\nLast submitted: **{time_str} ago**",
                     color=discord.Color.gold()
                 )
-                channel_embed.add_field(
-                    name="📊 Status",
-                    value=f"Last submitted: **{time_str} ago**",
-                    inline=False
-                )
-                channel_embed.add_field(
-                    name="📝 Action Required",
-                    value="Please share `/todo` to update your daily task list",
-                    inline=False
-                )
-                channel_embed.add_field(
-                    name="⚠️ Note",
-                    value="This reminder runs every 3 hours until you submit",
-                    inline=False
-                )
+                embed.add_field(name="Action", value="Use `/todo` to submit", inline=False)
                 
                 try:
-                    await channel.send(embed=channel_embed)
-                    print(f"✅ Channel ping sent to {member.display_name}")
-                except Exception as e:
-                    print(f"⚠️ Failed to send channel ping: {e}")
+                    await channel.send(embed=embed)
+                    await member.send(embed=embed)
+                except:
+                    pass
                 
-                # DM Ping (Direct Notification)
-                dm_embed = discord.Embed(
-                    title="🔔 TODO Reminder - Direct Message",
-                    description="You haven't submitted your TODO in the last 24 hours!",
-                    color=discord.Color.orange()
-                )
-                dm_embed.add_field(
-                    name="⏱️ Time Since Last Submit",
-                    value=f"**{time_str}** ago",
-                    inline=False
-                )
-                dm_embed.add_field(
-                    name="📝 What to do?",
-                    value="Use `/todo` command to submit your daily task list",
-                    inline=False
-                )
-                dm_embed.add_field(
-                    name="🔄 Ping Frequency",
-                    value="You'll receive this reminder every 3 hours until you submit",
-                    inline=False
-                )
-                dm_embed.set_footer(text="Keep up with your daily TODOs! 💪")
-                
-                try:
-                    await member.send(embed=dm_embed)
-                    print(f"✅ DM sent to {member.display_name}")
-                except Exception as e:
-                    print(f"⚠️ Failed to DM {member.display_name}: {e}")
-                
-                # ============================================================
-                # 💾 UPDATE DATABASE: Record this ping time
-                # ============================================================
-                print(f"💾 [TODO_CHECKER] Updating last_ping timestamp for {member.display_name}")
-                safe_update_one(todo_coll, {"_id": str(uid)}, {
-                    "$set": {
-                        "last_ping": now  # Record when we pinged them
-                    }
-                })
-                print(f"✅ Database updated - next ping in ~3 hours")
-                
-            else:
-                # User is within 24-hour limit, no action needed
-                hours_safe = int(elapsed_since_submit / 3600)
-                print(f"✅ [TODO_CHECKER] {member.display_name} OK ({hours_safe}h submitted)")
-        
-        except ValueError:
-            print(f"⚠️ todo_checker skipped invalid UID: {doc['_id']}")
-        except Exception as e:
-            print(f"⚠️ todo_checker error for user {doc.get('_id', '?')}: {str(e)[:100]}")
+                # Update ping timestamp
+                safe_update_one(todo_coll, {"_id": str(uid)}, {"$set": {"last_ping": now}})
+        except:
+            pass
+
 
 @todo_checker.before_loop
 async def before_todo_checker():
-    """
-    🚀 SMART STARTUP BEHAVIOR
-    
-    On deployment:
-    1. Wait for bot to be ready (20 sec buffer)
-    2. Run first check IMMEDIATELY (respects last_ping in database)
-    3. Subsequent checks follow 3-hour interval
-    
-    Result: Pings follow database timestamps, no artificial delay blocking users
-    """
-    print("⏰ [TODO_CHECKER] Bot startup: waiting for Discord connection...")
+    """Ensure todo_checker starts"""
     await bot.wait_until_ready()
-    
-    # Give Discord API time to stabilize (20 second buffer)
-    await asyncio.sleep(20)
-    
-    print("✅ [TODO_CHECKER] Ready! First TODO check will run immediately.")
-    print("📊 [TODO_CHECKER] Subsequent checks every 3 hours.")
-    print("🎯 [TODO_CHECKER] Pings respect database last_ping timestamps (no spam!)")
 
-@tree.command(name="listtodo", description="View your current todo", guild=GUILD)
+
+@tree.command(name="listtodo", description="View your current TODO", guild=GUILD)
 async def listtodo(interaction: discord.Interaction):
+    """View your current TODO submission"""
     await interaction.response.defer(ephemeral=True)
     try:
-        uid = str(interaction.user.id)
-        doc = safe_find_one(todo_coll, {"_id": uid})
+        doc = safe_find_one(todo_coll, {"_id": str(interaction.user.id)})
         if not doc or "todo" not in doc:
-            return await interaction.followup.send("No current TODO.", ephemeral=True)
-        t = doc["todo"]
-        embed = discord.Embed(title="Your Current TODO", color=discord.Color.blue())
-        embed.add_field(name="Name", value=t["name"], inline=True)
-        embed.add_field(name="Date", value=t["date"], inline=True)
-        embed.add_field(name="Must Do", value=t["must_do"], inline=False)
-        embed.add_field(name="Can Do", value=t["can_do"], inline=False)
-        embed.add_field(name="Don't Do", value=t["dont_do"], inline=False)
+            return await interaction.followup.send("No TODO submitted yet. Use `/todo`", ephemeral=True)
+        
+        todo = doc["todo"]
+        embed = discord.Embed(title=f"📋 {todo.get('feature_name', 'N/A')}", color=discord.Color.blue())
+        embed.add_field(name="📅 Date", value=todo.get('date', 'N/A'), inline=True)
+        embed.add_field(name="✔️ Must Do", value=f"```{todo.get('must_do', 'N/A')}```", inline=False)
+        embed.add_field(name="🎯 Can Do", value=f"```{todo.get('can_do', 'N/A')}```", inline=False)
+        embed.add_field(name="❌ Don't Do", value=f"```{todo.get('dont_do', 'N/A')}```", inline=False)
+        
+        if "attachment" in todo:
+            att = todo["attachment"]
+            embed.add_field(name="📎 File", value=f"[{att.get('filename', 'File')}]({att.get('url', 'N/A')})", inline=False)
+        
         await interaction.followup.send(embed=embed, ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
-@tree.command(name="deltodo", description="Delete your own todo", guild=GUILD)
+
+@tree.command(name="deltodo", description="Delete your TODO", guild=GUILD)
 async def deltodo(interaction: discord.Interaction):
+    """Delete your current TODO submission"""
     await interaction.response.defer(ephemeral=True)
     try:
-        uid = str(interaction.user.id)
-        safe_update_one(todo_coll, {"_id": uid}, {"$unset": {"todo": ""}})
-        await interaction.followup.send("TODO deleted (timer unchanged).", ephemeral=True)
+        result = safe_delete_one(todo_coll, {"_id": str(interaction.user.id)})
+        if result:
+            await interaction.followup.send("✅ TODO deleted", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ No TODO to delete", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
-@tree.command(name="todostatus", description="Check last submit time + reminder status", guild=GUILD)
-@app_commands.describe(user="Optional: Check another (Owner only)")
+
+@tree.command(name="todostatus", description="Check TODO status", guild=GUILD)
+@app_commands.describe(user="Optional: Check another user (Owner only)")
 async def todostatus(interaction: discord.Interaction, user: discord.Member = None):
+    """Check your or another user's TODO status"""
     await interaction.response.defer(ephemeral=True)
+    
+    target = user if user else interaction.user
+    
+    # If checking another user, owner check
+    if user and interaction.user.id != OWNER_ID:
+        return await interaction.followup.send("❌ Owner only", ephemeral=True)
+    
     try:
-        if user and interaction.user.id != OWNER_ID:
-            return await interaction.followup.send("Can only check others if owner.", ephemeral=True)
-        target = user or interaction.user
-        uid = str(target.id)
-        doc = safe_find_one(todo_coll, {"_id": uid})
-        if not doc:
-            return await interaction.followup.send("No record.", ephemeral=True)
-        elapsed = time.time() - doc.get("last_submit", 0)
+        doc = safe_find_one(todo_coll, {"_id": str(target.id)})
+        last_submit = doc.get("last_submit", 0) if doc else 0
+        
+        now = time.time()
+        elapsed = now - last_submit
         hours = int(elapsed // 3600)
-        embed = discord.Embed(title="TODO Status", color=discord.Color.green())
+        minutes = int((elapsed % 3600) // 60)
+        time_str = f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m"
+        
+        embed = discord.Embed(title="📊 TODO Status", color=discord.Color.green())
         embed.add_field(name="User", value=target.mention)
-        embed.add_field(name="Last Submit", value=f"{hours}h ago")
-        embed.add_field(name="Status", value="Safe" if elapsed < 86400 else "Pending ping")
+        embed.add_field(name="Last Submit", value=f"{time_str} ago")
+        embed.add_field(name="Status", value="✅ Safe" if elapsed < 86400 else "⏰ Pending ping")
+        
         await interaction.followup.send(embed=embed, ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
+
 
 # ==================== ADMIN COMMANDS ====================
 @tree.command(name="msz", description="Send announcement (Owner)", guild=GUILD)
