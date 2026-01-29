@@ -1840,7 +1840,10 @@ async def tododebug(interaction: discord.Interaction):
 # ==================== SECURITY FIREWALLS ====================
 @bot.event
 async def on_message(message: discord.Message):
-    if message.guild and message.guild.id != GUILD_ID or message.author.bot:
+    # Allow DMs to pass through for forwarding to owner
+    if message.author.bot:
+        return
+    if message.guild and message.guild.id != GUILD_ID:
         return
     now = time.time()
     
