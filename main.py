@@ -32,6 +32,8 @@ from aiohttp import web
 from pymongo import MongoClient
 from dotenv import load_dotenv
 from discord.app_commands import checks
+import socket
+import re
 
 load_dotenv()
 
@@ -2286,8 +2288,31 @@ app.router.add_get('/', handle)
 async def main():
     runner = web.AppRunner(app)
     await runner.setup()
-    await web.TCPSite(runner, '0.0.0.0', PORT).start()
-    print(f"✅ Keep-alive server running on port {PORT}")
+    
+    # Try to start the web server with port reuse
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            site = web.TCPSite(runner, '0.0.0.0', PORT)
+            await site.start()
+            print(f"✅ Keep-alive server running on port {PORT}")
+            break
+        except OSError as e:
+            error_str = str(e)
+            if "10048" in error_str or "Address already in use" in error_str:
+                if attempt < max_retries - 1:
+                    print(f"⚠️  Port {PORT} busy, retrying in 2 seconds... (attempt {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(2)
+                else:
+                    print(f"❌ Port {PORT} is still in use after {max_retries} attempts")
+                    print("   Commands to fix:")
+                    print("   1. netstat -ano | Select-String ':3000'")
+                    print("   2. Stop-Process -Id <PID> -Force")
+                    await runner.cleanup()
+                    return
+            else:
+                raise
+    
     await bot.start(TOKEN)
 
 if __name__ == "__main__":
