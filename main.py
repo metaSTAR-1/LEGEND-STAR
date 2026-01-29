@@ -566,18 +566,18 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         print(f"🎤 {member.display_name} joined VC - tracking started (Cam: {new_cam})")
 
     # 🎥 ADVANCED CAM ENFORCEMENT SYSTEM 🎥
-    # Logic:
-    # - Screenshare ON + Cam ON = ✅ CAM ON (no warning, screenshare bonus)
-    # - Screenshare ON + Cam OFF = ✅ OK (screenshare is acceptable, no cam needed)
-    # - Screenshare OFF + Cam ON = ✅ CAM ON (no warning)
-    # - Screenshare OFF + Cam OFF = ❌ WARNING (please cam on within 3 min or KICK)
+    # Updated Logic:
+    # - Cam ON + Screenshare ON = ✅ NO WARNING (camera is on, approved)
+    # - Cam ON + Screenshare OFF = ✅ NO WARNING (camera is on, approved)
+    # - Cam OFF + Screenshare ON = ⚠️ WARNING (need camera even with screenshare)
+    # - Cam OFF + Screenshare OFF = ⚠️ WARNING (no camera, no screenshare)
     
     channel = after.channel
     if channel and (str(channel.id) in STRICT_CHANNEL_IDS or "Cam On" in channel.name):
         has_cam = after.self_video  # True if camera is on
         has_screenshare = after.self_stream  # True if screensharing
         
-        # ✅ PRIMARY: CAM ON - Most important status (ignores screenshare status)
+        # ✅ PRIMARY: CAM ON - Camera is on = NO WARNING (regardless of screenshare status)
         if has_cam:
             task = cam_timers.pop(member.id, None)
             if task:
@@ -589,17 +589,11 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             else:
                 print(f"✅ [{member.display_name}] CAM ON - No warning needed")
         
-        # ✅ FALLBACK: Screenshare on (only if cam off) - No enforcement needed
-        elif has_screenshare:
-            task = cam_timers.pop(member.id, None)
-            if task:
-                task.cancel()
-            print(f"✅ [{member.display_name}] SCREENSHARE ON - Cam not required (Alternative approved)")
-        
-        # ❌ NOT ALLOWED: Neither cam nor screenshare - Enforce cam NOW!
+        # ❌ CAM OFF - WARNING NEEDED! (screenshare is not enough, camera is required)
         else:
             if member.id not in cam_timers:
-                print(f"⚠️ [{member.display_name}] CAM OFF + NO SCREENSHARE - ENFORCEMENT STARTED!")
+                status_text = "SCREENSHARE ON" if has_screenshare else "NO SCREENSHARE"
+                print(f"⚠️ [{member.display_name}] CAM OFF ({status_text}) - ENFORCEMENT STARTED!")
                 
                 async def enforce():
                     # 🎯 AGGRESSIVE WARNING - Send immediately (30s delay before enforcement timer)
@@ -617,8 +611,8 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                             inline=False
                         )
                         embed.add_field(
-                            name="✅ ACCEPTABLE ALTERNATIVES",
-                            value="• Turn on your camera\n• Share your screen",
+                            name="✅ ACTION REQUIRED",
+                            value="• Turn on your camera\n*(Screenshare alone is not enough - camera is mandatory)*",
                             inline=False
                         )
                         embed.set_footer(text="⚠️ This channel has strict camera enforcement enabled")
@@ -634,27 +628,25 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                     # 🔍 CHECK IF USER COMPLIED
                     if member.voice and member.voice.channel and str(member.voice.channel.id) in STRICT_CHANNEL_IDS:
                         current_cam = member.voice.self_video
-                        current_screenshare = member.voice.self_stream
                         
-                        # ✅ USER COMPLIED: Has cam or screenshare now
-                        if current_cam or current_screenshare:
-                            status = "CAM ON" if current_cam else "SCREENSHARE ON"
-                            print(f"✅ [{member.display_name}] COMPLIED IN TIME - {status} detected")
+                        # ✅ USER COMPLIED: Camera is now ON
+                        if current_cam:
+                            print(f"✅ [{member.display_name}] COMPLIED IN TIME - CAM ON detected")
                         
-                        # ❌ USER DIDN'T COMPLY: Still no cam and no screenshare - AUTOMATIC DISCONNECT
+                        # ❌ USER DIDN'T COMPLY: Camera still OFF - AUTOMATIC DISCONNECT
                         else:
                             print(f"🚪 [{member.display_name}] ENFORCEMENT EXECUTED - Disconnecting from VC (Channel: {member.voice.channel.name})")
                             
                             try:
                                 # KICK/DISCONNECT THE USER
-                                await member.move_to(None, reason="Enforcement: No camera or screenshare within 3-minute deadline")
+                                await member.move_to(None, reason="Enforcement: Camera required within 3-minute deadline")
                                 print(f"✅ [{member.display_name}] SUCCESSFULLY KICKED from voice channel")
                                 
                                 # 📢 NOTIFY CHANNEL ABOUT ENFORCEMENT ACTION
                                 try:
                                     embed_kick = discord.Embed(
                                         title="🚪 User Disconnected",
-                                        description=f"{member.mention} has been automatically disconnected for not having camera or screenshare enabled.",
+                                        description=f"{member.mention} has been automatically disconnected for not enabling their camera.",
                                         color=discord.Color.orange()
                                     )
                                     embed_kick.set_footer(text="Camera enforcement in strict channels")
@@ -666,7 +658,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                                 try:
                                     embed_dm = discord.Embed(
                                         title="📵 You Were Disconnected",
-                                        description=f"You were disconnected from **{channel.name}** due to camera/screenshare enforcement.\n\nPlease enable your camera or screenshare before rejoining.",
+                                        description=f"You were disconnected from **{channel.name}** due to camera enforcement.\n\nCamera is mandatory in this channel (screenshare alone is not sufficient).\n\nPlease enable your camera before rejoining.",
                                         color=discord.Color.red()
                                     )
                                     await member.send(embed=embed_dm)
