@@ -42,7 +42,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 CLIENT_ID = os.getenv("CLIENT_ID")
 GUILD_ID_STR = os.getenv("GUILD_ID", "0")
 MONGODB_URI = os.getenv("MONGODB_URI")
-OWNER_ID = [1406313503278764174, 1449952640455934022]
+OWNER_ID = 1406313503278764174
 
 # Validate required environment variables
 if not TOKEN:
