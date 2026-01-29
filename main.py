@@ -366,6 +366,42 @@ async def restore_channel(guild, channel_name, category_id, channel_type):
     except Exception as e:
         print(f"⚠️ Channel restoration error: {e}")
 
+# ==================== WHITELIST CHECKER ====================
+def is_whitelisted_entity(actor_or_id):
+    """
+    Advanced whitelist checker for bots, webhooks, and trusted users
+    Returns: True if the entity is whitelisted/trusted, False otherwise
+    """
+    # Handle both discord.User and int (user/bot ID)
+    actor_id = actor_or_id.id if hasattr(actor_or_id, 'id') else actor_or_id
+    
+    # Check if it's a whitelisted bot
+    if actor_id in WHITELISTED_BOTS:
+        print(f"✅ [WHITELIST] Bot ID {actor_id} is whitelisted (TRUSTED BOT)")
+        return True
+    
+    # Check if it's a whitelisted webhook
+    if actor_id in WHITELISTED_WEBHOOKS:
+        print(f"✅ [WHITELIST] Webhook ID {actor_id} is whitelisted (TRUSTED WEBHOOK)")
+        return True
+    
+    # Check if it's the owner
+    if actor_id == OWNER_ID:
+        print(f"✅ [WHITELIST] User {actor_id} is the OWNER")
+        return True
+    
+    # Check if it's the bot itself
+    if hasattr(actor_or_id, 'id') and actor_or_id == bot.user:
+        print(f"✅ [WHITELIST] Actor is the bot itself")
+        return True
+    
+    # Check if it's in TRUSTED_USERS
+    if actor_id in TRUSTED_USERS:
+        print(f"✅ [WHITELIST] User {actor_id} is in TRUSTED_USERS")
+        return True
+    
+    return False
+
 # Safe wrapper functions for MongoDB operations
 
 
@@ -1866,28 +1902,34 @@ async def on_message(message: discord.Message):
     # ☠️ ZONE 1: HACKER THREATS (INSTANT BAN - NO STRIKES)
     # ---------------------------------------------------------
     
-    # A. GHOST WEBHOOK DESTROYER
+    # A. GHOST WEBHOOK DESTROYER (Only for non-whitelisted webhooks)
     if message.webhook_id:
-        SUSPICIOUS_WORDS = ["free nitro", "steam", "gift", "airdrop", "@everyone", "@here", "maa", "rand", "chut"]
-        link_regex = r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
-        
-        is_threat = (
-            message.mention_everyone or 
-            re.search(link_regex, message.content) or 
-            any(bad_word in message.content.lower() for bad_word in SUSPICIOUS_WORDS)
-        )
+        # ✅ WHITELIST CHECK: If webhook is whitelisted, skip all threats checks
+        if message.webhook_id not in WHITELISTED_WEBHOOKS:
+            SUSPICIOUS_WORDS = ["free nitro", "steam", "gift", "airdrop", "@everyone", "@here", "maa", "rand", "chut"]
+            link_regex = r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
+            
+            is_threat = (
+                message.mention_everyone or 
+                re.search(link_regex, message.content) or 
+                any(bad_word in message.content.lower() for bad_word in SUSPICIOUS_WORDS)
+            )
 
-        if is_threat:
-            try:
-                await message.delete()
-                webhooks = await message.channel.webhooks()
-                for webhook in webhooks:
-                    if webhook.id == message.webhook_id:
-                        await webhook.delete(reason="LegendMeta: Malicious Ghost Webhook Activity")
-                        await message.channel.send("☠️ **LegendMeta**: Unauthorized Ghost Webhook DESTROYED.")
-            except Exception as e:
-                print(f"Webhook cleanup error: {e}")
-            return # STOP HERE
+            if is_threat:
+                print(f"🚨 [WEBHOOK THREAT] Non-whitelisted webhook {message.webhook_id} sending malicious content")
+                try:
+                    await message.delete()
+                    webhooks = await message.channel.webhooks()
+                    for webhook in webhooks:
+                        if webhook.id == message.webhook_id:
+                            await webhook.delete(reason="LegendMeta: Malicious Ghost Webhook Activity")
+                            await message.channel.send("☠️ **LegendMeta**: Unauthorized Ghost Webhook DESTROYED.")
+                            print(f"✅ [WEBHOOK THREAT] Malicious webhook {message.webhook_id} has been deleted")
+                except Exception as e:
+                    print(f"⚠️ [WEBHOOK THREAT] Webhook cleanup error: {e}")
+                return # STOP HERE
+        else:
+            print(f"✅ [WEBHOOK] Webhook {message.webhook_id} is whitelisted - allowing all content")
 
     # IMMUNITY CHECK
     if message.author.id == OWNER_ID or message.author == bot.user:
@@ -1957,24 +1999,41 @@ async def on_message(message: discord.Message):
     
     await bot.process_commands(message)
 
-@tasks.loop(minutes=1)
+@tasks.loop(minutes=5)
 async def clean_webhooks():
+    """
+    Periodic webhook cleanup task
+    ✅ WHITELISTED webhooks are NEVER deleted
+    ❌ Non-whitelisted webhooks are removed for security
+    """
     if GUILD_ID <= 0:
         return
+    
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         return
-    for channel in guild.text_channels:
-        webhooks = await channel.webhooks()
-        for wh in webhooks:
-            if wh.id not in WHITELISTED_WEBHOOKS:
-                await wh.delete(reason="Unauthorized webhook")
+    
+    try:
+        for channel in guild.text_channels:
+            try:
+                webhooks = await channel.webhooks()
+                for wh in webhooks:
+                    # ✅ WHITELIST CHECK: Skip whitelisted webhooks
+                    if wh.id in WHITELISTED_WEBHOOKS:
+                        print(f"✅ [WEBHOOK CLEANUP] Webhook {wh.id} is whitelisted - KEEPING")
+                        continue
+                    
+                    # ❌ Delete non-whitelisted webhook
+                    await wh.delete(reason="Security: Unauthorized webhook")
+                    print(f"❌ [WEBHOOK CLEANUP] Deleted unauthorized webhook {wh.id} from #{channel.name}")
+            except Exception as e:
+                print(f"⚠️ [WEBHOOK CLEANUP] Error processing channel {channel.name}: {e}")
+    except Exception as e:
+        print(f"⚠️ [WEBHOOK CLEANUP] General error: {e}")
 
-@bot.event
-async def on_webhooks_update(channel):
-    """
-    Detects creation of webhooks in REAL TIME.
-    """
+@tasks.loop(minutes=1)
+async def monitor_audit():
+    """Monitors critical server activities like unauthorized webhook creation"""
     try:
         async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.webhook_create):
             if entry.user.id != OWNER_ID and entry.user.id != bot.user.id:
@@ -1997,86 +2056,146 @@ async def on_webhooks_update(channel):
 async def on_guild_channel_delete(channel):
     if channel.guild.id != GUILD_ID:
         return
+    
     async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_delete):
         actor = entry.user
-        # IMMUNITY: Owner and Bot are trusted
-        if actor.id == OWNER_ID or actor == bot.user or actor.id in TRUSTED_USERS:
+        
+        # ✅ WHITELIST CHECK: Skip whitelisted bots/webhooks/users
+        if is_whitelisted_entity(actor):
+            print(f"✅ [CHANNEL DELETE] Whitelisted entity {actor.name} ({actor.id}) deleted channel - ALLOWED")
             return
         
-        # CRITICAL THREAT: Channel deletion = Instant Ban
+        # ❌ THREAT DETECTED: Non-whitelisted entity deleted a channel
+        print(f"🚨 [ANTI-NUKE] CHANNEL DELETION THREAT DETECTED: {actor.name} ({actor.id})")
+        
         try:
-            await channel.guild.ban(actor, reason=f"Anti-Nuke: Channel Deletion")
+            # BAN the attacker immediately
+            await channel.guild.ban(actor, reason=f"Anti-Nuke: Channel Deletion by {actor.name}")
+            
+            # Alert in tech channel
             tech_channel = bot.get_channel(TECH_CHANNEL_ID)
             if tech_channel:
-                await tech_channel.send(f"🔨 BANNED {actor.mention} for deleting {channel.name}")
+                embed = discord.Embed(
+                    title="🚨 ANTI-NUKE: CHANNEL DELETION",
+                    color=discord.Color.red(),
+                    timestamp=datetime.datetime.now(KOLKATA)
+                )
+                embed.add_field(name="🔨 Action", value="User BANNED", inline=True)
+                embed.add_field(name="👤 Attacker", value=f"{actor.mention} ({actor.id})", inline=True)
+                embed.add_field(name="📢 Channel", value=channel.name, inline=True)
+                await tech_channel.send(embed=embed)
             
             # Alert owner
             await alert_owner(channel.guild, "CHANNEL DELETION DETECTED", {
                 "Attacker": f"{actor.name} (ID: {actor.id})",
                 "Channel": channel.name,
-                "Action": "Instant Ban"
+                "Action": "✅ Instant Ban Applied"
             })
+            
+            print(f"✅ [ANTI-NUKE] {actor.name} has been BANNED for channel deletion")
+            
         except discord.Forbidden:
-            print(f"⚠️ FAILED TO BAN channel deleter. Engaging emergency lockdown.")
+            print(f"⚠️ [ANTI-NUKE] FAILED TO BAN channel deleter. Engaging emergency lockdown.")
             await engage_lockdown(channel.guild, "Failed to ban channel deleter - role hierarchy issue")
         except Exception as e:
-            print(f"⚠️ Channel delete error: {e}")
+            print(f"⚠️ [ANTI-NUKE] Channel delete error: {e}")
+
 
 @bot.event
 async def on_guild_role_delete(role):
     if role.guild.id != GUILD_ID:
         return
+    
     async for entry in role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_delete):
         actor = entry.user
-        # IMMUNITY: Owner and Bot are trusted
-        if actor.id == OWNER_ID or actor == bot.user or actor.id in TRUSTED_USERS:
+        
+        # ✅ WHITELIST CHECK: Skip whitelisted bots/webhooks/users
+        if is_whitelisted_entity(actor):
+            print(f"✅ [ROLE DELETE] Whitelisted entity {actor.name} ({actor.id}) deleted role - ALLOWED")
             return
         
-        # CRITICAL THREAT: Role deletion = Instant Ban
+        # ❌ THREAT DETECTED: Non-whitelisted entity deleted a role
+        print(f"🚨 [ANTI-NUKE] ROLE DELETION THREAT DETECTED: {actor.name} ({actor.id})")
+        
         try:
-            await role.guild.ban(actor, reason=f"Anti-Nuke: Role Deletion")
+            # BAN the attacker immediately
+            await role.guild.ban(actor, reason=f"Anti-Nuke: Role Deletion by {actor.name}")
+            
+            # Alert in tech channel
             tech_channel = bot.get_channel(TECH_CHANNEL_ID)
             if tech_channel:
-                await tech_channel.send(f"🔨 BANNED {actor.mention} for deleting {role.name}")
+                embed = discord.Embed(
+                    title="🚨 ANTI-NUKE: ROLE DELETION",
+                    color=discord.Color.red(),
+                    timestamp=datetime.datetime.now(KOLKATA)
+                )
+                embed.add_field(name="🔨 Action", value="User BANNED", inline=True)
+                embed.add_field(name="👤 Attacker", value=f"{actor.mention} ({actor.id})", inline=True)
+                embed.add_field(name="👑 Role", value=role.name, inline=True)
+                await tech_channel.send(embed=embed)
             
             # Alert owner
             await alert_owner(role.guild, "ROLE DELETION DETECTED", {
                 "Attacker": f"{actor.name} (ID: {actor.id})",
                 "Role": role.name,
-                "Action": "Instant Ban"
+                "Action": "✅ Instant Ban Applied"
             })
+            
+            print(f"✅ [ANTI-NUKE] {actor.name} has been BANNED for role deletion")
+            
         except discord.Forbidden:
-            print(f"⚠️ FAILED TO BAN role deleter. Engaging emergency lockdown.")
+            print(f"⚠️ [ANTI-NUKE] FAILED TO BAN role deleter. Engaging emergency lockdown.")
             await engage_lockdown(role.guild, "Failed to ban role deleter - role hierarchy issue")
         except Exception as e:
-            print(f"⚠️ Role delete error: {e}")
+            print(f"⚠️ [ANTI-NUKE] Role delete error: {e}")
+
 
 @bot.event
 async def on_member_ban(guild: discord.Guild, user: discord.User):
     if guild.id != GUILD_ID:
         return
+    
     async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.ban):
         actor = entry.user
-        # IMMUNITY: Owner, Bot, and self-bans are allowed
-        if actor.id == OWNER_ID or actor == bot.user or user.id == actor.id or actor.id in TRUSTED_USERS:
+        
+        # ✅ WHITELIST CHECK: Skip whitelisted bots/webhooks/users AND self-bans
+        if is_whitelisted_entity(actor) or user.id == actor.id:
+            print(f"✅ [MEMBER BAN] Whitelisted entity {actor.name} ({actor.id}) banned {user.name} - ALLOWED")
             return
         
-        # THREAT: Unauthorized ban = Instant counter-ban + unban victim
+        # ❌ THREAT DETECTED: Non-whitelisted entity banned someone
+        print(f"🚨 [ANTI-NUKE] UNAUTHORIZED BAN THREAT DETECTED: {actor.name} ({actor.id}) banned {user.name}")
+        
         try:
-            await guild.ban(actor, reason=f"Anti-Nuke: Unauthorized Ban")
-            await guild.unban(user, reason="Anti-nuke recovery")
+            # BAN the attacker and unban the victim
+            await guild.ban(actor, reason=f"Anti-Nuke: Unauthorized Ban by {actor.name}")
+            await guild.unban(user, reason="Anti-Nuke: Victim recovery")
+            
+            # Alert in tech channel
             tech_channel = bot.get_channel(TECH_CHANNEL_ID)
             if tech_channel:
-                await tech_channel.send(f"⚔️ BANNED {actor.mention} for banning {user.mention}, unbanned {user.mention}")
+                embed = discord.Embed(
+                    title="🚨 ANTI-NUKE: UNAUTHORIZED BAN",
+                    color=discord.Color.red(),
+                    timestamp=datetime.datetime.now(KOLKATA)
+                )
+                embed.add_field(name="🔨 Action", value="Attacker BANNED + Victim UNBANNED", inline=True)
+                embed.add_field(name="👤 Attacker", value=f"{actor.mention} ({actor.id})", inline=True)
+                embed.add_field(name="👥 Victim", value=f"{user.mention} (ID: {user.id})", inline=True)
+                await tech_channel.send(embed=embed)
             
             # Alert owner
             await alert_owner(guild, "UNAUTHORIZED BAN DETECTED", {
                 "Attacker": f"{actor.name} (ID: {actor.id})",
                 "Victim": f"{user.name}",
-                "Action": "Banned attacker, unbanned victim"
+                "Action": "✅ Attacker BANNED, Victim UNBANNED"
             })
+            
+            print(f"✅ [ANTI-NUKE] {actor.name} has been BANNED for unauthorized ban attempt, {user.name} has been UNBANNED")
+            
         except Exception as e:
-            print(f"⚠️ Member ban error: {e}")
+            print(f"⚠️ [ANTI-NUKE] Member ban error: {e}")
+
 
 @tasks.loop(minutes=1)
 async def monitor_audit():
