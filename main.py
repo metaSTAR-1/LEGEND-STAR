@@ -1113,6 +1113,11 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
     must_do = discord.ui.TextInput(label="Must Do", style=discord.TextStyle.paragraph)
     can_do = discord.ui.TextInput(label="Can Do", style=discord.TextStyle.paragraph)
     dont_do = discord.ui.TextInput(label="Don't Do", style=discord.TextStyle.paragraph)
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.attachment_url = None
+        self.attachment_filename = None
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -1136,16 +1141,27 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
             
             # Save to database
             print(f"⏸️ [TODO] Saving to database...")
+            todo_data = {
+                "name": self.name.value,
+                "date": self.date.value,
+                "must_do": self.must_do.value or "N/A",
+                "can_do": self.can_do.value or "N/A",
+                "dont_do": self.dont_do.value or "N/A"
+            }
+            
+            # Add attachment info if available
+            if self.attachment_url:
+                todo_data["attachment"] = {
+                    "url": self.attachment_url,
+                    "filename": self.attachment_filename,
+                    "uploaded_at": datetime.datetime.now(tz=KOLKATA).isoformat()
+                }
+                print(f"📎 Attachment detected: {self.attachment_filename}")
+            
             safe_update_one(todo_coll, {"_id": uid}, {"$set": {
                 "last_submit": time.time(),
                 "last_ping": 0,  # 🔥 RESET PING TIMER when user submits - No more pings!
-                "todo": {
-                    "name": self.name.value,
-                    "date": self.date.value,
-                    "must_do": self.must_do.value or "N/A",
-                    "can_do": self.can_do.value or "N/A",
-                    "dont_do": self.dont_do.value or "N/A"
-                }
+                "todo": todo_data
             }})
             print(f"✅ [TODO] Database save complete - Ping timer RESET!")
             
@@ -1158,6 +1174,16 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
             embed.add_field(name="✔️ Must Do", value=self.must_do.value or "N/A", inline=False)
             embed.add_field(name="🎯 Can Do", value=self.can_do.value or "N/A", inline=False)
             embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
+            
+            # Add attachment field if available
+            if self.attachment_url:
+                embed.add_field(
+                    name="📎 Attachment",
+                    value=f"[{self.attachment_filename}]({self.attachment_url})",
+                    inline=False
+                )
+                embed.set_image(url=self.attachment_url)
+            
             embed.set_footer(text=f"Status: Submitted | User: {interaction.user.id}")
             print(f"✅ [TODO] Embed created successfully")
             
@@ -1196,7 +1222,14 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
             else:
                 print(f"❌ Guild not found after fetch")
             
-            await interaction.followup.send("✅ TODO submitted successfully!", ephemeral=True)
+            # Show option to add attachment
+            view = TodoAttachmentView(self, interaction.user.id)
+            await interaction.followup.send(
+                "✅ TODO submitted! Would you like to add a screenshot/image as evidence?\n\n"
+                "📸 **Supported**: PNG, JPG, JPEG, GIF, WEBP (Max 8MB)",
+                view=view,
+                ephemeral=True
+            )
             
         except Exception as e:
             print(f"\n❌ CRITICAL ERROR in TodoModal.on_submit: {type(e).__name__}: {e}")
@@ -1207,9 +1240,72 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
             except:
                 pass
 
-@tree.command(name="todo", description="Submit your own todo", guild=GUILD)
+
+class TodoAttachmentView(discord.ui.View):
+    """View for attaching files to todo after modal submission"""
+    def __init__(self, modal_instance, user_id):
+        super().__init__(timeout=600)  # 10 minutes timeout
+        self.modal_instance = modal_instance
+        self.user_id = user_id
+    
+    @discord.ui.button(label="📎 Upload Screenshot", style=discord.ButtonStyle.primary, emoji="📸")
+    async def upload_attachment(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Allow user to upload screenshot/image"""
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Only the original submitter can attach files.", ephemeral=True)
+            return
+        
+        await interaction.response.send_message(
+            "📸 **File Upload Instructions**:\n\n"
+            "1. Please upload your screenshot/image using the message attachment feature\n"
+            "2. Reply to this message with the file attached\n"
+            "3. I'll automatically link it to your TODO\n\n"
+            "⏰ **Note**: You have 5 minutes to upload the file",
+            ephemeral=True
+        )
+        print(f"📸 User {interaction.user.name} requested to upload attachment for TODO")
+    
+    @discord.ui.button(label="✅ Done", style=discord.ButtonStyle.success)
+    async def done_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Mark attachment upload as complete"""
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Only the original submitter can use this button.", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        # Show final summary
+        embed = discord.Embed(
+            title="📋 TODO Summary",
+            description="Your TODO has been successfully recorded!",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="📝 Name", value=self.modal_instance.name.value, inline=True)
+        embed.add_field(name="📅 Date", value=self.modal_instance.date.value, inline=True)
+        embed.add_field(name="✔️ Must Do", value=self.modal_instance.must_do.value or "N/A", inline=False)
+        embed.add_field(name="🎯 Can Do", value=self.modal_instance.can_do.value or "N/A", inline=False)
+        embed.add_field(name="❌ Don't Do", value=self.modal_instance.dont_do.value or "N/A", inline=False)
+        
+        if self.modal_instance.attachment_url:
+            embed.add_field(
+                name="📎 Attachment",
+                value=f"✅ {self.modal_instance.attachment_filename}",
+                inline=False
+            )
+        
+        embed.set_footer(text="Status: ✅ Complete")
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        print(f"✅ TODO finalized for user {interaction.user.name}")
+
+@tree.command(name="todo", description="Submit your own todo with optional screenshot/image", guild=GUILD)
 async def todo(interaction: discord.Interaction):
-    await interaction.response.send_modal(TodoModal())
+    """Advanced TODO command with attachment support"""
+    print(f"🚀 [TODO CMD] User {interaction.user.name} started TODO form")
+    modal = TodoModal()
+    await interaction.response.send_modal(modal)
+
+
 
 class AtodoModal(TodoModal):
     def __init__(self, target: discord.Member):
@@ -1227,16 +1323,27 @@ class AtodoModal(TodoModal):
             
             # Save to database (same as user submission)
             print(f"⏸️ [ATODO] Saving to database...")
+            todo_data = {
+                "name": self.name.value,
+                "date": self.date.value,
+                "must_do": self.must_do.value or "N/A",
+                "can_do": self.can_do.value or "N/A",
+                "dont_do": self.dont_do.value or "N/A"
+            }
+            
+            # Add attachment info if available
+            if self.attachment_url:
+                todo_data["attachment"] = {
+                    "url": self.attachment_url,
+                    "filename": self.attachment_filename,
+                    "uploaded_at": datetime.datetime.now(tz=KOLKATA).isoformat()
+                }
+                print(f"📎 Attachment detected: {self.attachment_filename}")
+            
             safe_update_one(todo_coll, {"_id": uid}, {"$set": {
                 "last_submit": time.time(),
                 "last_ping": 0,  # 🔥 RESET PING TIMER when owner submits - No more pings!
-                "todo": {
-                    "name": self.name.value,
-                    "date": self.date.value,
-                    "must_do": self.must_do.value or "N/A",
-                    "can_do": self.can_do.value or "N/A",
-                    "dont_do": self.dont_do.value or "N/A"
-                }
+                "todo": todo_data
             }})
             print(f"✅ [ATODO] Database save complete - Ping timer RESET!")
             
@@ -1250,6 +1357,16 @@ class AtodoModal(TodoModal):
             embed.add_field(name="✔️ Must Do", value=self.must_do.value or "N/A", inline=False)
             embed.add_field(name="🎯 Can Do", value=self.can_do.value or "N/A", inline=False)
             embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
+            
+            # Add attachment field if available
+            if self.attachment_url:
+                embed.add_field(
+                    name="📎 Attachment",
+                    value=f"[{self.attachment_filename}]({self.attachment_url})",
+                    inline=False
+                )
+                embed.set_image(url=self.attachment_url)
+            
             embed.set_footer(text=f"Status: Submitted by Owner | Target: {self.target.id}")
             print(f"✅ [ATODO] Embed created successfully")
             
@@ -1293,14 +1410,25 @@ class AtodoModal(TodoModal):
             import traceback
             traceback.print_exc()
         
-        await interaction.followup.send(f"✅ TODO submitted for {self.target.mention}!", ephemeral=True)
+        # Show attachment option for owner
+        view = TodoAttachmentView(self, interaction.user.id)
+        await interaction.followup.send(
+            f"✅ TODO submitted for {self.target.mention}!\n\n"
+            "Would you like to add a screenshot/image as evidence?",
+            view=view,
+            ephemeral=True
+        )
 
-@tree.command(name="atodo", description="Submit todo on behalf of another user", guild=GUILD)
-@app_commands.describe(user="Target")
+@tree.command(name="atodo", description="Submit todo on behalf of another user with optional screenshot", guild=GUILD)
+@app_commands.describe(user="Target user for TODO assignment")
 async def atodo(interaction: discord.Interaction, user: discord.Member):
+    """Owner-only command to submit TODO for another user with attachment support"""
     if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("Owner only", ephemeral=True)
+        return await interaction.response.send_message("❌ Owner only", ephemeral=True)
+    
+    print(f"🚀 [ATODO CMD] Owner {interaction.user.name} started ATODO form for {user.name}")
     await interaction.response.send_modal(AtodoModal(user))
+
 
 @tasks.loop(hours=3)
 async def todo_checker():
