@@ -524,6 +524,7 @@ spam_cache = defaultdict(list)
 strike_cache = defaultdict(list)
 join_times = defaultdict(list)
 vc_cache = defaultdict(list)
+last_audit_id = None  # Track last processed audit entry to prevent duplicates
 
 def format_time(minutes: int) -> str:
     h, m = divmod(minutes, 60)
@@ -610,9 +611,11 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 if relevant_channel and getattr(relevant_channel, 'id', None) == EXCLUDED_VOICE_CHANNEL_ID:
                     print(f"⏭️ Skipping cam stat save for excluded channel ({EXCLUDED_VOICE_CHANNEL_ID}) for {member.display_name}")
                 else:
+                    # FIXED: Cam ON = camera is ON (not: camera AND NOT screenshare)
                     field = "data.voice_cam_on_minutes" if old_cam else "data.voice_cam_off_minutes"
                     result = save_with_retry(users_coll, {"_id": user_id}, {"$inc": {field: mins}})
-                    print(f"💾 [{field}] Saved {mins}m for {member.display_name} - MongoDB: {result}")
+                    cam_status = "🎥 ON" if old_cam else "❌ OFF"
+                    print(f"💾 [{field}] Saved {mins}m for {member.display_name} ({cam_status}) - MongoDB: {result}")
             del vc_join_times[member.id]
 
     # Track when user joins VC
@@ -729,8 +732,9 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 
                 cam_timers[member.id] = bot.loop.create_task(enforce())
 
-@tasks.loop(minutes=2)
+@tasks.loop(seconds=30)
 async def batch_save_study():
+    """Save voice & cam stats every 30 seconds for accurate tracking"""
     if GUILD_ID <= 0 or not mongo_connected:
         return
     guild = bot.get_guild(GUILD_ID)
@@ -749,11 +753,16 @@ async def batch_save_study():
                 vc_join_times.pop(uid, None)
                 continue
             
+            # Calculate minutes elapsed since last save (at least 30 seconds)
             mins = int((now - join) // 60)
-            if mins > 0:
-                # Cam ON: camera is on (regardless of screenshare). Cam OFF: camera is off
-                # NOTE: Cam ON + Screenshare ON = counts as cam on time
+            
+            # Only save if at least 30 seconds have passed
+            if mins > 0 or (now - join) >= 30:
+                # FIXED CAM DETECTION LOGIC:
+                # Cam ON = camera is ON (regardless of screenshare)
+                # Cam OFF = camera is OFF
                 cam = member.voice.self_video
+                
                 # Skip saving for excluded voice channel
                 try:
                     current_channel = member.voice.channel
@@ -766,27 +775,33 @@ async def batch_save_study():
                     processed.add(uid)
                     continue
 
-                field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
-                # FIX: Separate operations to avoid MongoDB conflict
-                # First: Create document if it doesn't exist
-                users_coll.update_one(
-                    {"_id": str(uid)},
-                    {"$setOnInsert": {
-                        "data": {
-                            "voice_cam_on_minutes": 0,
-                            "voice_cam_off_minutes": 0,
-                            "message_count": 0,
-                            "yesterday": {"cam_on": 0, "cam_off": 0}
-                        }
-                    }},
-                    upsert=True
-                )
-                # Then: Increment the field
-                result = save_with_retry(users_coll, {"_id": str(uid)}, {"$inc": {field: mins}})
-                if result:
-                    print(f"⏱️ {member.display_name}: +{mins}m {field} (Cam: {cam}) ✅")
-                    saved_count += 1
-                vc_join_times[uid] = now
+                # Only save 1 minute at a time if less than 1 minute has passed
+                mins_to_save = max(1, mins) if mins > 0 else 1
+                
+                if mins_to_save > 0:
+                    field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
+                    # FIX: Separate operations to avoid MongoDB conflict
+                    # First: Create document if it doesn't exist
+                    users_coll.update_one(
+                        {"_id": str(uid)},
+                        {"$setOnInsert": {
+                            "data": {
+                                "voice_cam_on_minutes": 0,
+                                "voice_cam_off_minutes": 0,
+                                "message_count": 0,
+                                "yesterday": {"cam_on": 0, "cam_off": 0}
+                            }
+                        }},
+                        upsert=True
+                    )
+                    # Then: Increment the field
+                    result = save_with_retry(users_coll, {"_id": str(uid)}, {"$inc": {field: mins_to_save}})
+                    if result:
+                        cam_status = "🎥 ON" if cam else "❌ OFF"
+                        print(f"⏱️ {member.display_name}: +{mins_to_save}m {field} ({cam_status}) ✅")
+                        saved_count += 1
+                    # Reset join time after saving
+                    vc_join_times[uid] = now
                 processed.add(uid)
         
         # ✅ SECOND: Also save ALL members currently in any voice channel (fallback tracking)
@@ -805,40 +820,46 @@ async def batch_save_study():
                 else:
                     mins = int((now - vc_join_times[member.id]) // 60)
                 
-                if mins > 0:
-                    # Cam ON: camera is on AND not screen sharing. Cam OFF: camera off OR screen sharing
-                    cam = member.voice.self_video and not member.voice.self_stream
+                if mins > 0 or (now - vc_join_times[member.id]) >= 30:
+                    # FIXED CAM DETECTION: Camera ON = camera is physically on
+                    cam = member.voice.self_video
+                    
                     # Skip saving for excluded voice channel
                     if getattr(channel, 'id', None) == EXCLUDED_VOICE_CHANNEL_ID:
                         print(f"⏭️ Skipping batch save for excluded channel ({EXCLUDED_VOICE_CHANNEL_ID}) for {member.display_name}")
                         vc_join_times[member.id] = now
                         continue
-                    field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
-                    # FIX: Separate operations to avoid MongoDB conflict
-                    users_coll.update_one(
-                        {"_id": str(member.id)},
-                        {"$setOnInsert": {
-                            "data": {
-                                "voice_cam_on_minutes": 0,
-                                "voice_cam_off_minutes": 0,
-                                "message_count": 0,
-                                "yesterday": {"cam_on": 0, "cam_off": 0}
-                            }
-                        }},
-                        upsert=True
-                    )
-                    result = save_with_retry(users_coll, {"_id": str(member.id)}, {"$inc": {field: mins}})
-                    if result:
-                        print(f"⏱️ {member.display_name}: +{mins}m {field} (Cam: {cam}) ✅")
-                        saved_count += 1
-                    vc_join_times[member.id] = now
+                    
+                    mins_to_save = max(1, mins) if mins > 0 else 1
+                    
+                    if mins_to_save > 0:
+                        field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
+                        # FIX: Separate operations to avoid MongoDB conflict
+                        users_coll.update_one(
+                            {"_id": str(member.id)},
+                            {"$setOnInsert": {
+                                "data": {
+                                    "voice_cam_on_minutes": 0,
+                                    "voice_cam_off_minutes": 0,
+                                    "message_count": 0,
+                                    "yesterday": {"cam_on": 0, "cam_off": 0}
+                                }
+                            }},
+                            upsert=True
+                        )
+                        result = save_with_retry(users_coll, {"_id": str(member.id)}, {"$inc": {field: mins_to_save}})
+                        if result:
+                            cam_status = "🎥 ON" if cam else "❌ OFF"
+                            print(f"⏱️ {member.display_name}: +{mins_to_save}m {field} ({cam_status}) ✅")
+                            saved_count += 1
+                        vc_join_times[member.id] = now
         
         # Print consolidated registration message (only ONE message)
         if newly_registered:
             print(f"🔄 Registered ({len(newly_registered)} new): {', '.join(newly_registered)}")
         
         if saved_count > 0:
-            print(f"📊 Batch save complete: Updated {saved_count} active members in voice")
+            print(f"📊 30-second batch save: Updated {saved_count} active members in voice")
     except Exception as e:
         print(f"⚠️ Batch save error: {str(e)[:100]}")
 
@@ -851,6 +872,7 @@ async def before_batch_save():
 # ==================== LEADERBOARDS ====================
 @tasks.loop(time=datetime.time(23, 55, tzinfo=KOLKATA))
 async def auto_leaderboard():
+    """Auto leaderboard at 23:55 IST - shows today's data before reset at 23:59"""
     if GUILD_ID <= 0 or not mongo_connected:
         return
     guild = bot.get_guild(GUILD_ID)
@@ -860,6 +882,7 @@ async def auto_leaderboard():
     if not channel:
         return
     try:
+        now_ist = datetime.datetime.now(KOLKATA)
         docs = safe_find(users_coll, {})
         active = []
         for doc in docs:
@@ -872,31 +895,53 @@ async def auto_leaderboard():
                 pass
         sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:15]
         sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:10]
-        desc = "**Cam On ✅**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_on'])}" for i, u in enumerate(sorted_on, 1) if u["cam_on"] > 0) or "No data today.\n")
-        desc += "\n**Cam Off ❌**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_off'])}" for i, u in enumerate(sorted_off, 1) if u["cam_off"] > 0) or "")
-        embed = discord.Embed(title="🌙 Daily Leaderboard", description=desc, color=0x00FF00, timestamp=datetime.datetime.now(KOLKATA))
-        embed.set_footer(text="Auto at 23:55 IST")
+        desc = "**📊 Cam On ✅ (Today)**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_on'])}" for i, u in enumerate(sorted_on, 1) if u["cam_on"] > 0) or "No data today.\n")
+        desc += "\n**Cam Off ❌ (Today)**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_off'])}" for i, u in enumerate(sorted_off, 1) if u["cam_off"] > 0) or "")
+        embed = discord.Embed(title="🌙 Daily Leaderboard (Before Reset)", description=desc, color=0x00FF00, timestamp=now_ist)
+        embed.set_footer(text="Auto at 23:55 IST | Daily reset at 23:59 IST")
         await channel.send(embed=embed)
     except Exception as e:
         print(f"⚠️ Auto leaderboard error: {str(e)[:80]}")
 
-@tasks.loop(time=datetime.time(0, 0, tzinfo=KOLKATA))
+@tasks.loop(time=datetime.time(23, 59, tzinfo=KOLKATA))
 async def midnight_reset():
+    """Daily data reset at 11:59 PM IST (Indian Time) - preserves yesterday's data"""
     if not mongo_connected:
         return
     try:
+        now_ist = datetime.datetime.now(KOLKATA)
+        print(f"\n{'='*70}")
+        print(f"🌙 DAILY RESET INITIATED at {now_ist.strftime('%d/%m/%Y %H:%M:%S IST')}")
+        print(f"{'='*70}")
+        
         docs = safe_find(users_coll, {})
+        reset_count = 0
+        
         for doc in docs:
-            data = doc.get("data", {})
-            safe_update_one(users_coll, {"_id": doc["_id"]}, {"$set": {
-                "data.yesterday.cam_on": data.get("voice_cam_on_minutes", 0),
-                "data.yesterday.cam_off": data.get("voice_cam_off_minutes", 0),
-                "data.voice_cam_on_minutes": 0,
-                "data.voice_cam_off_minutes": 0
-            }})
-        print("🕛 Midnight reset complete")
+            try:
+                data = doc.get("data", {})
+                cam_on_today = data.get("voice_cam_on_minutes", 0)
+                cam_off_today = data.get("voice_cam_off_minutes", 0)
+                
+                # Preserve today's data to yesterday, then reset today's counters
+                result = safe_update_one(users_coll, {"_id": doc["_id"]}, {"$set": {
+                    "data.yesterday.cam_on": cam_on_today,
+                    "data.yesterday.cam_off": cam_off_today,
+                    "data.voice_cam_on_minutes": 0,
+                    "data.voice_cam_off_minutes": 0,
+                    "last_reset": now_ist.isoformat()
+                }})
+                if result:
+                    reset_count += 1
+                    print(f"   ✅ {doc['_id']}: {format_time(cam_on_today)} ON → Yesterday | Reset today's counters")
+            except Exception as e:
+                print(f"   ⚠️ Error resetting {doc.get('_id', 'unknown')}: {str(e)[:60]}")
+        
+        print(f"\n🌙 Daily Reset Complete: {reset_count} users reset")
+        print(f"📊 New data collection cycle starts now at {now_ist.strftime('%H:%M:%S IST')}")
+        print(f"{'='*70}\n")
     except Exception as e:
-        print(f"⚠️ Midnight reset error: {str(e)[:80]}")
+        print(f"⚠️ Midnight reset error: {str(e)[:100]}")
 
 # Leaderboard commands
 @tree.command(name="lb", description="Today’s voice + cam leaderboard", guild=GUILD)
@@ -2402,10 +2447,14 @@ async def ok_command(interaction: discord.Interaction):
 # ==================== STARTUP ====================
 @bot.event
 async def on_ready():
+    print(f"\n{'='*70}")
+    print(f"✅ LEGEND STAR BOT ONLINE")
+    print(f"{'='*70}")
     print(f"Logged in as {bot.user}")
     print(f"Bot ID: {bot.user.id}")
     print(f"GUILD_ID: {GUILD_ID}")
     print(f"MongoDB Connected: {mongo_connected}")
+    print(f"IST Timezone: {datetime.datetime.now(KOLKATA).strftime('%d/%m/%Y %H:%M:%S')}")
     print(f"Commands in tree before sync: {[c.name for c in tree.get_commands(guild=GUILD if GUILD_ID > 0 else None)]}")
     
     # Verify MongoDB connection
@@ -2428,16 +2477,26 @@ async def on_ready():
     
     try:
         if GUILD_ID > 0:
-            print(f"Syncing to guild: {GUILD_ID}")
+            print(f"🔄 Syncing to guild: {GUILD_ID}")
             synced = await tree.sync(guild=GUILD)
         else:
-            print("Syncing globally (no GUILD_ID set)")
+            print("🔄 Syncing globally (no GUILD_ID set)")
             synced = await tree.sync()  # global
         print(f"✅ Synced {len(synced)} commands: {[c.name for c in synced]}")
     except Exception as e:
         print(f"❌ Sync failed: {e}")
         import traceback
         traceback.print_exc()
+    
+    print(f"\n📊 Starting Background Tasks:")
+    print(f"   🕐 batch_save_study: Every 30 seconds")
+    print(f"   🏆 auto_leaderboard: Daily at 23:55 IST")
+    print(f"   🌙 midnight_reset: Daily at 23:59 IST")
+    print(f"   ⏰ todo_checker: Every 3 hours")
+    print(f"   🔗 clean_webhooks: Every 5 minutes")
+    print(f"   📋 monitor_audit: Every 1 minute")
+    print(f"{'='*70}\n")
+    
     batch_save_study.start()
     auto_leaderboard.start()
     midnight_reset.start()
