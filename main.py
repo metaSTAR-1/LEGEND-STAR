@@ -97,13 +97,17 @@ STRIKE_RESET = 300
 FORBIDDEN_KEYWORDS = ["@everyone", "@here", "free nitro", "steam community", "gift", "airdrop", "maa", "rand", "chut"]
 
 # 🛡️ TRUSTED LISTS (Whitelist for Strike System)
-TRUSTED_USERS = [OWNER_ID]
+TRUSTED_USERS = [OWNER_ID, 1449952640455934022]  # Added 1449952640455934022 as trusted owner-level user
 TRUSTED_BOTS = WHITELISTED_BOTS.copy()
 TEMP_VOICE_BOT_ID = 762217899355013120
 
 # 📒 STRIKE DATABASE (2-Strike System for Human Errors)
 offense_history = {}  # {user_id: timestamp_of_last_offense}
 is_locked_down = False  # Global lockdown state
+
+# 🔍 AUDIT LOG TRACKING (Prevent Duplicate Messages)
+processed_audit_ids = set()  # Track processed audit entry IDs to prevent duplicate alerts
+MAX_AUDIT_CACHE = 1000  # Max entries to cache (prevents memory bloat)
 
 # Security settings
 DANGEROUS_EXTS = {'.exe', '.bat', '.cmd', '.msi', '.apk', '.jar', '.vbs', '.scr', '.ps1', '.hta'}
@@ -520,7 +524,6 @@ spam_cache = defaultdict(list)
 strike_cache = defaultdict(list)
 join_times = defaultdict(list)
 vc_cache = defaultdict(list)
-last_audit_id = None  # Track last processed audit entry to avoid duplicates
 
 def format_time(minutes: int) -> str:
     h, m = divmod(minutes, 60)
@@ -2036,21 +2039,72 @@ async def clean_webhooks():
 @tasks.loop(minutes=1)
 async def monitor_audit():
     """Monitors critical server activities like unauthorized webhook creation"""
+    if GUILD_ID <= 0:
+        return
+    
     try:
-        async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.webhook_create):
-            if entry.user.id != OWNER_ID and entry.user.id != bot.user.id:
-                # 1. DELETE THE WEBHOOK
-                webhooks = await channel.webhooks()
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            return
+        
+        async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.webhook_create):
+            # ✅ DEDUPLICATION: Check if we already processed this audit entry
+            if entry.id in processed_audit_ids:
+                print(f"⏭️ [WEBHOOK CREATE] Audit entry {entry.id} already processed - SKIPPING DUPLICATE")
+                return
+            
+            # Mark this audit entry as processed
+            processed_audit_ids.add(entry.id)
+            
+            # Prevent memory bloat
+            if len(processed_audit_ids) > MAX_AUDIT_CACHE:
+                processed_audit_ids.pop()
+            
+            # ✅ WHITELIST CHECK: Allow owner and bot itself
+            if is_whitelisted_entity(entry.user):
+                print(f"✅ [WEBHOOK CREATE] Whitelisted entity {entry.user.name} ({entry.user.id}) created webhook - ALLOWED (Audit ID: {entry.id})")
+                return
+            
+            # ❌ THREAT DETECTED: Unauthorized webhook creation
+            print(f"🚨 [ANTI-NUKE] UNAUTHORIZED WEBHOOK CREATION: {entry.user.name} ({entry.user.id}) (Audit ID: {entry.id})")
+            
+            # 1. DELETE THE WEBHOOK
+            try:
+                webhooks = await entry.channel.webhooks() if entry.channel else []
                 for webhook in webhooks:
                     if webhook.id == entry.target.id:
                         await webhook.delete(reason="LegendMeta: Unauthorized Creation")
+                        print(f"✅ Webhook {webhook.id} deleted")
+            except Exception as e:
+                print(f"⚠️ Failed to delete webhook: {e}")
+            
+            # 2. BAN THE CREATOR (Hacker/Rogue Admin -> INSTANT BAN)
+            try:
+                await guild.ban(entry.user, reason=f"Anti-Nuke: Malicious Webhook Creation (Audit ID: {entry.id})")
                 
-                # 2. BAN THE CREATOR (Hacker/Rogue Admin -> INSTANT BAN)
-                try:
-                    await entry.user.ban(reason="LegendMeta: Malicious Webhook Creation")
-                    await channel.send(f"⚔️ **THREAT ELIMINATED**: Banned {entry.user.mention} for creating a webhook.")
-                except:
-                    await channel.send(f"⚠️ Webhook deleted, but could not ban user {entry.user.name}")
+                # Alert in tech channel
+                tech_channel = bot.get_channel(TECH_CHANNEL_ID)
+                if tech_channel:
+                    embed = discord.Embed(
+                        title="🚨 ANTI-NUKE: UNAUTHORIZED WEBHOOK",
+                        color=discord.Color.red(),
+                        timestamp=datetime.datetime.now(KOLKATA)
+                    )
+                    embed.add_field(name="🔨 Action", value="User BANNED + Webhook DELETED", inline=True)
+                    embed.add_field(name="👤 Attacker", value=f"{entry.user.mention} ({entry.user.id})", inline=True)
+                    embed.add_field(name="🆔 Audit Entry", value=f"`{entry.id}`", inline=False)
+                    await tech_channel.send(embed=embed)
+                
+                # Alert owner
+                await alert_owner(guild, "UNAUTHORIZED WEBHOOK CREATION", {
+                    "Attacker": f"{entry.user.name} (ID: {entry.user.id})",
+                    "Action": "✅ Instant Ban Applied + Webhook Deleted",
+                    "Audit Entry": str(entry.id)
+                })
+                
+                print(f"✅ [ANTI-NUKE] {entry.user.name} has been BANNED for webhook creation (Audit ID: {entry.id})")
+            except Exception as e:
+                print(f"⚠️ Failed to ban webhook creator: {e}")
     except Exception:
         pass
 
@@ -2060,6 +2114,19 @@ async def on_guild_channel_delete(channel):
         return
     
     async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_delete):
+        # ✅ DEDUPLICATION: Check if we already processed this audit entry
+        if entry.id in processed_audit_ids:
+            print(f"⏭️ [CHANNEL DELETE] Audit entry {entry.id} already processed - SKIPPING DUPLICATE")
+            return
+        
+        # Mark this audit entry as processed
+        processed_audit_ids.add(entry.id)
+        
+        # Prevent memory bloat
+        if len(processed_audit_ids) > MAX_AUDIT_CACHE:
+            # Remove oldest entries (convert to list, remove first element, convert back)
+            processed_audit_ids.pop()
+        
         actor = entry.user
         
         # ✅ WHITELIST CHECK: Skip whitelisted bots/webhooks/users
@@ -2085,6 +2152,7 @@ async def on_guild_channel_delete(channel):
                 embed.add_field(name="🔨 Action", value="User BANNED", inline=True)
                 embed.add_field(name="👤 Attacker", value=f"{actor.mention} ({actor.id})", inline=True)
                 embed.add_field(name="📢 Channel", value=channel.name, inline=True)
+                embed.add_field(name="🆔 Audit Entry", value=f"`{entry.id}`", inline=False)
                 await tech_channel.send(embed=embed)
             
             # Alert owner
@@ -2094,7 +2162,7 @@ async def on_guild_channel_delete(channel):
                 "Action": "✅ Instant Ban Applied"
             })
             
-            print(f"✅ [ANTI-NUKE] {actor.name} has been BANNED for channel deletion")
+            print(f"✅ [ANTI-NUKE] {actor.name} has been BANNED for channel deletion (Audit ID: {entry.id})")
             
         except discord.Forbidden:
             print(f"⚠️ [ANTI-NUKE] FAILED TO BAN channel deleter. Engaging emergency lockdown.")
@@ -2109,6 +2177,18 @@ async def on_guild_role_delete(role):
         return
     
     async for entry in role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_delete):
+        # ✅ DEDUPLICATION: Check if we already processed this audit entry
+        if entry.id in processed_audit_ids:
+            print(f"⏭️ [ROLE DELETE] Audit entry {entry.id} already processed - SKIPPING DUPLICATE")
+            return
+        
+        # Mark this audit entry as processed
+        processed_audit_ids.add(entry.id)
+        
+        # Prevent memory bloat
+        if len(processed_audit_ids) > MAX_AUDIT_CACHE:
+            processed_audit_ids.pop()
+        
         actor = entry.user
         
         # ✅ WHITELIST CHECK: Skip whitelisted bots/webhooks/users
@@ -2134,6 +2214,7 @@ async def on_guild_role_delete(role):
                 embed.add_field(name="🔨 Action", value="User BANNED", inline=True)
                 embed.add_field(name="👤 Attacker", value=f"{actor.mention} ({actor.id})", inline=True)
                 embed.add_field(name="👑 Role", value=role.name, inline=True)
+                embed.add_field(name="🆔 Audit Entry", value=f"`{entry.id}`", inline=False)
                 await tech_channel.send(embed=embed)
             
             # Alert owner
@@ -2143,7 +2224,7 @@ async def on_guild_role_delete(role):
                 "Action": "✅ Instant Ban Applied"
             })
             
-            print(f"✅ [ANTI-NUKE] {actor.name} has been BANNED for role deletion")
+            print(f"✅ [ANTI-NUKE] {actor.name} has been BANNED for role deletion (Audit ID: {entry.id})")
             
         except discord.Forbidden:
             print(f"⚠️ [ANTI-NUKE] FAILED TO BAN role deleter. Engaging emergency lockdown.")
@@ -2158,6 +2239,18 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
         return
     
     async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.ban):
+        # ✅ DEDUPLICATION: Check if we already processed this audit entry
+        if entry.id in processed_audit_ids:
+            print(f"⏭️ [MEMBER BAN] Audit entry {entry.id} already processed - SKIPPING DUPLICATE")
+            return
+        
+        # Mark this audit entry as processed
+        processed_audit_ids.add(entry.id)
+        
+        # Prevent memory bloat
+        if len(processed_audit_ids) > MAX_AUDIT_CACHE:
+            processed_audit_ids.pop()
+        
         actor = entry.user
         
         # ✅ WHITELIST CHECK: Skip whitelisted bots/webhooks/users AND self-bans
@@ -2184,6 +2277,7 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
                 embed.add_field(name="🔨 Action", value="Attacker BANNED + Victim UNBANNED", inline=True)
                 embed.add_field(name="👤 Attacker", value=f"{actor.mention} ({actor.id})", inline=True)
                 embed.add_field(name="👥 Victim", value=f"{user.mention} (ID: {user.id})", inline=True)
+                embed.add_field(name="🆔 Audit Entry", value=f"`{entry.id}`", inline=False)
                 await tech_channel.send(embed=embed)
             
             # Alert owner
@@ -2193,7 +2287,7 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
                 "Action": "✅ Attacker BANNED, Victim UNBANNED"
             })
             
-            print(f"✅ [ANTI-NUKE] {actor.name} has been BANNED for unauthorized ban attempt, {user.name} has been UNBANNED")
+            print(f"✅ [ANTI-NUKE] {actor.name} has been BANNED for unauthorized ban attempt, {user.name} has been UNBANNED (Audit ID: {entry.id})")
             
         except Exception as e:
             print(f"⚠️ [ANTI-NUKE] Member ban error: {e}")
