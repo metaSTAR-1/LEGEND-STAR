@@ -2354,7 +2354,8 @@ async def monitor_audit():
             # Stop at last processed entry to avoid duplicates
             if last_audit_id and entry.id == last_audit_id:
                 break
-            if entry.user.id == bot.user.id or entry.user.id == OWNER_ID:
+            # ✅ WHITELIST: Allow bot, OWNER, and all TRUSTED_USERS (including Sapphire)
+            if entry.user.id == bot.user.id or entry.user.id in TRUSTED_USERS:
                 continue
             if entry.action in [discord.AuditLogAction.role_update, discord.AuditLogAction.channel_update, discord.AuditLogAction.ban, discord.AuditLogAction.kick, discord.AuditLogAction.member_role_update]:
                 # Update last_id ONLY when we have a new action to report
