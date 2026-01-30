@@ -570,10 +570,11 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     now = time.time()
     old_in = bool(before.channel)
     new_in = bool(after.channel)
-    # Cam is ON if: camera is on AND not screen sharing
-    # Cam is OFF if: camera is off OR screen sharing
-    old_cam = before.self_video and not before.self_stream
-    new_cam = after.self_video and not after.self_stream
+    # Cam is ON if: camera is on (regardless of screenshare status)
+    # Cam is OFF if: camera is off
+    # NOTE: Cam ON + Screenshare ON = counts as cam on time (both are active)
+    old_cam = before.self_video
+    new_cam = after.self_video
 
     # Initialize user record first
     save_with_retry(users_coll, {"_id": user_id}, {"$setOnInsert": {"data": {"voice_cam_on_minutes": 0, "voice_cam_off_minutes": 0, "message_count": 0, "yesterday": {"cam_on": 0, "cam_off": 0}}}})
@@ -747,8 +748,9 @@ async def batch_save_study():
             
             mins = int((now - join) // 60)
             if mins > 0:
-                # Cam ON: camera is on AND not screen sharing. Cam OFF: camera off OR screen sharing
-                cam = member.voice.self_video and not member.voice.self_stream
+                # Cam ON: camera is on (regardless of screenshare). Cam OFF: camera is off
+                # NOTE: Cam ON + Screenshare ON = counts as cam on time
+                cam = member.voice.self_video
                 # Skip saving for excluded voice channel
                 try:
                     current_channel = member.voice.channel
