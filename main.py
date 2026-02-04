@@ -60,6 +60,7 @@ except ValueError:
 TECH_CHANNEL_ID = 1458142927619362969
 KOLKATA = pytz.timezone("Asia/Kolkata")
 AUTO_LB_CHANNEL_ID = 1455385042044846242
+AUTO_LB_PING_ROLE_ID = 1457931098171506719  # 🏆 Role to ping at 11:55 for leaderboard announcement
 TODO_CHANNEL_ID = 1458400694682783775
 ROLE_ID = 1458400797133115474
 PORT = int(os.getenv("PORT", 3000))
@@ -107,7 +108,9 @@ is_locked_down = False  # Global lockdown state
 
 # 🔍 AUDIT LOG TRACKING (Prevent Duplicate Messages)
 processed_audit_ids = set()  # Track processed audit entry IDs to prevent duplicate alerts
+processed_audit_timestamps = {}  # {audit_id: timestamp} for more robust deduplication
 MAX_AUDIT_CACHE = 1000  # Max entries to cache (prevents memory bloat)
+AUDIT_DEDUP_WINDOW = 5  # seconds - window to consider duplicate audit entries
 
 # Security settings
 DANGEROUS_EXTS = {'.exe', '.bat', '.cmd', '.msi', '.apk', '.jar', '.vbs', '.scr', '.ps1', '.hta'}
@@ -870,9 +873,43 @@ async def before_batch_save():
     print("✅ batch_save_study loop started")
 
 # ==================== LEADERBOARDS ====================
+def get_medal_emoji(position: int, cam_type: str) -> str:
+    """Get creative medal emojis based on position and cam type"""
+    medals = {
+        1: {"on": "🥇 GOLDEN LEGEND", "off": "🥇 KING OF SILENCE"},
+        2: {"on": "🥈 SILVER STAR", "off": "🥈 NOBLE SILENT"},
+        3: {"on": "🥉 BRONZE WARRIOR", "off": "🥉 SILENT KNIGHT"},
+        4: {"on": "💎 DIAMOND SPARK", "off": "💎 QUIET MASTER"},
+        5: {"on": "🏆 CHAMPION'S CROWN", "off": "🏆 ELITE QUIET FORCE"}
+    }
+    return medals.get(position, {}).get(cam_type, "⭐")
+
+@tasks.loop(time=datetime.time(11, 55, tzinfo=KOLKATA))
+async def auto_leaderboard_ping():
+    """Auto ping at 11:55 IST to announce leaderboard"""
+    if GUILD_ID <= 0 or not mongo_connected:
+        return
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    channel = guild.get_channel(AUTO_LB_CHANNEL_ID)
+    if not channel:
+        return
+    try:
+        role = guild.get_role(AUTO_LB_PING_ROLE_ID)
+        if not role:
+            print(f"⚠️ Auto ping role {AUTO_LB_PING_ROLE_ID} not found")
+            return
+        
+        ping_text = f"{role.mention} 📊 **Leaderboard Published With Top 5 Performers!**\n✨ Check the rankings below and compete for glory! ✨"
+        await channel.send(ping_text)
+        print(f"✅ Auto ping sent at 11:55 IST to {role.name}")
+    except Exception as e:
+        print(f"⚠️ Auto ping error: {str(e)[:80]}")
+
 @tasks.loop(time=datetime.time(23, 55, tzinfo=KOLKATA))
 async def auto_leaderboard():
-    """Auto leaderboard at 23:55 IST - shows today's data before reset at 23:59"""
+    """Auto leaderboard at 23:55 IST - shows today's data before reset at 23:59 (TOP 5 ONLY)"""
     if GUILD_ID <= 0 or not mongo_connected:
         return
     guild = bot.get_guild(GUILD_ID)
@@ -893,13 +930,42 @@ async def auto_leaderboard():
                     active.append({"name": m.display_name, "cam_on": data.get("voice_cam_on_minutes", 0), "cam_off": data.get("voice_cam_off_minutes", 0)})
             except:
                 pass
-        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:15]
-        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:10]
-        desc = "**📊 Cam On ✅ (Today)**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_on'])}" for i, u in enumerate(sorted_on, 1) if u["cam_on"] > 0) or "No data today.\n")
-        desc += "\n**Cam Off ❌ (Today)**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_off'])}" for i, u in enumerate(sorted_off, 1) if u["cam_off"] > 0) or "")
-        embed = discord.Embed(title="🌙 Daily Leaderboard (Before Reset)", description=desc, color=0x00FF00, timestamp=now_ist)
-        embed.set_footer(text="Auto at 23:55 IST | Daily reset at 23:59 IST")
+        
+        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:5]  # TOP 5 ONLY
+        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:5]  # TOP 5 ONLY
+        
+        # ✨ Creative Leaderboard with Medals
+        desc = "🎯 **═════════════════════════════════════**\n"
+        desc += "📹 **CAM ON LEGENDS (Top 5)**\n"
+        desc += "✨ **═════════════════════════════════════**\n"
+        
+        if sorted_on:
+            for i, u in enumerate(sorted_on, 1):
+                if u["cam_on"] > 0:
+                    medal = get_medal_emoji(i, "on")
+                    desc += f"{medal} | **{u['name']}** → {format_time(u['cam_on'])}\n"
+        else:
+            desc += "*No data yet. Start studying!* 📚\n"
+        
+        desc += "\n🎯 **═════════════════════════════════════**\n"
+        desc += "🤫 **SILENT STUDIERS (Top 5)**\n"
+        desc += "✨ **═════════════════════════════════════**\n"
+        
+        if sorted_off:
+            for i, u in enumerate(sorted_off, 1):
+                if u["cam_off"] > 0:
+                    medal = get_medal_emoji(i, "off")
+                    desc += f"{medal} | **{u['name']}** → {format_time(u['cam_off'])}\n"
+        else:
+            desc += "*No silent sessions yet.* 🤐\n"
+        
+        desc += "\n🌟 **═════════════════════════════════════**"
+        
+        embed = discord.Embed(title="🌙 DAILY CHAMPIONS SHOWCASE 🌙", description=desc, color=0xFFD700, timestamp=now_ist)
+        embed.set_footer(text="⏰ Reset at 23:59 IST | 💪 Keep grinding, legends!")
+        embed.set_thumbnail(url="https://cdn-icons-png.flaticon.com/512/4436/4436481.png")
         await channel.send(embed=embed)
+        print(f"✅ Auto leaderboard posted at 23:55 IST with TOP 5 performers")
     except Exception as e:
         print(f"⚠️ Auto leaderboard error: {str(e)[:80]}")
 
@@ -983,12 +1049,40 @@ async def lb(interaction: discord.Interaction):
                 continue
         
         print(f"   ✅ Processed {len(docs)} documents, {len(active)} have data")
-        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:15]
-        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:10]
-        desc = "**Cam On ✅**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_on'])}" for i, u in enumerate(sorted_on, 1) if u["cam_on"] > 0) or "No data yet. Start joining voice channels!\n")
-        desc += "\n**Cam Off ❌**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_off'])}" for i, u in enumerate(sorted_off, 1) if u["cam_off"] > 0) or "No data.")
-        embed = discord.Embed(title="🏆 Study Leaderboard", description=desc, color=0xFFD700)
-        embed.set_footer(text="Data saves every 2 minutes | Resets daily at midnight IST")
+        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:5]  # TOP 5 ONLY
+        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:5]  # TOP 5 ONLY
+        
+        # ✨ Creative Leaderboard Design with Medals
+        desc = "🎯 **═════════════════════════════════════**\n"
+        desc += "📹 **CAM ON LEGENDS (Top 5)**\n"
+        desc += "✨ **═════════════════════════════════════**\n"
+        
+        if sorted_on:
+            for i, u in enumerate(sorted_on, 1):
+                if u["cam_on"] > 0:
+                    medal = get_medal_emoji(i, "on")
+                    desc += f"{medal} | **{u['name']}** → {format_time(u['cam_on'])}\n"
+        else:
+            desc += "*No data yet. Start studying!* 📚\n"
+        
+        desc += "\n🎯 **═════════════════════════════════════**\n"
+        desc += "🤫 **SILENT STUDIERS (Top 5)**\n"
+        desc += "✨ **═════════════════════════════════════**\n"
+        
+        if sorted_off:
+            for i, u in enumerate(sorted_off, 1):
+                if u["cam_off"] > 0:
+                    medal = get_medal_emoji(i, "off")
+                    desc += f"{medal} | **{u['name']}** → {format_time(u['cam_off'])}\n"
+        else:
+            desc += "*No silent sessions yet.* 🤐\n"
+        
+        desc += "\n🌟 **═════════════════════════════════════**\n"
+        desc += "💪 **Keep Grinding & Become a Legend!** 🚀"
+        
+        embed = discord.Embed(title="🏆 ULTIMATE STUDY CHAMPIONS 🏆", description=desc, color=0xFFD700)
+        embed.set_footer(text="⏰ Resets daily at midnight IST | 🎯 Top 5 Winners Only")
+        embed.set_thumbnail(url="https://cdn-icons-png.flaticon.com/512/4436/4436481.png")
         await interaction.followup.send(embed=embed)
     except Exception as e:
         error_msg = str(e)
@@ -2083,7 +2177,7 @@ async def clean_webhooks():
 
 @tasks.loop(minutes=1)
 async def monitor_audit():
-    """Monitors critical server activities like unauthorized webhook creation"""
+    """Monitors critical server activities like unauthorized webhook creation with enhanced deduplication"""
     if GUILD_ID <= 0:
         return
     
@@ -2092,18 +2186,32 @@ async def monitor_audit():
         if not guild:
             return
         
+        current_time = datetime.datetime.now(KOLKATA)
+        
         async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.webhook_create):
-            # ✅ DEDUPLICATION: Check if we already processed this audit entry
+            # ✅ ENHANCED DEDUPLICATION: Check if we already processed this audit entry
             if entry.id in processed_audit_ids:
                 print(f"⏭️ [WEBHOOK CREATE] Audit entry {entry.id} already processed - SKIPPING DUPLICATE")
                 return
             
-            # Mark this audit entry as processed
+            # Check timestamp-based deduplication (prevent alerts within window)
+            if entry.id in processed_audit_timestamps:
+                last_alert_time = processed_audit_timestamps[entry.id]
+                time_diff = (current_time - last_alert_time).total_seconds()
+                if time_diff < AUDIT_DEDUP_WINDOW:
+                    print(f"⏭️ [WEBHOOK CREATE] Audit entry {entry.id} - Too soon to re-alert (only {time_diff:.1f}s ago)")
+                    return
+            
+            # Mark this audit entry as processed with timestamp
             processed_audit_ids.add(entry.id)
+            processed_audit_timestamps[entry.id] = current_time
             
             # Prevent memory bloat
             if len(processed_audit_ids) > MAX_AUDIT_CACHE:
-                processed_audit_ids.pop()
+                # Remove oldest entries
+                oldest_id = min(processed_audit_timestamps, key=processed_audit_timestamps.get)
+                processed_audit_ids.discard(oldest_id)
+                del processed_audit_timestamps[oldest_id]
             
             # ✅ WHITELIST CHECK: Allow owner and bot itself
             if is_whitelisted_entity(entry.user):
@@ -2158,19 +2266,32 @@ async def on_guild_channel_delete(channel):
     if channel.guild.id != GUILD_ID:
         return
     
+    current_time = datetime.datetime.now(KOLKATA)
+    
     async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_delete):
-        # ✅ DEDUPLICATION: Check if we already processed this audit entry
+        # ✅ ENHANCED DEDUPLICATION: Check if we already processed this audit entry
         if entry.id in processed_audit_ids:
             print(f"⏭️ [CHANNEL DELETE] Audit entry {entry.id} already processed - SKIPPING DUPLICATE")
             return
         
-        # Mark this audit entry as processed
+        # Check timestamp-based deduplication (prevent alerts within window)
+        if entry.id in processed_audit_timestamps:
+            last_alert_time = processed_audit_timestamps[entry.id]
+            time_diff = (current_time - last_alert_time).total_seconds()
+            if time_diff < AUDIT_DEDUP_WINDOW:
+                print(f"⏭️ [CHANNEL DELETE] Audit entry {entry.id} - Too soon to re-alert (only {time_diff:.1f}s ago)")
+                return
+        
+        # Mark this audit entry as processed with timestamp
         processed_audit_ids.add(entry.id)
+        processed_audit_timestamps[entry.id] = current_time
         
         # Prevent memory bloat
         if len(processed_audit_ids) > MAX_AUDIT_CACHE:
-            # Remove oldest entries (convert to list, remove first element, convert back)
-            processed_audit_ids.pop()
+            # Remove oldest entries
+            oldest_id = min(processed_audit_timestamps, key=processed_audit_timestamps.get)
+            processed_audit_ids.discard(oldest_id)
+            del processed_audit_timestamps[oldest_id]
         
         actor = entry.user
         
