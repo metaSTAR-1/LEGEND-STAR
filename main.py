@@ -1205,6 +1205,38 @@ async def redlist(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
+@tree.command(name="removeredban", description="Remove a user from redlist & unban", guild=GUILD)
+@app_commands.describe(userid="User ID to remove from redlist")
+async def removeredban(interaction: discord.Interaction, userid: str):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if interaction.user.id != OWNER_ID:
+            return await interaction.followup.send("Owner only", ephemeral=True)
+        
+        if not userid.isdigit():
+            return await interaction.followup.send("Invalid ID format", ephemeral=True)
+        
+        # Check if user exists in redlist
+        user_doc = safe_find_one(redlist_coll, {"_id": userid})
+        if not user_doc:
+            return await interaction.followup.send(f"User {userid} not found in redlist", ephemeral=True)
+        
+        # Remove from redlist
+        safe_delete_one(redlist_coll, {"_id": userid})
+        
+        # Try to unban the user
+        try:
+            await interaction.guild.unban(discord.Object(id=int(userid)), reason="Removed from redlist")
+            status = "✅ Unbanned successfully"
+        except discord.errors.NotFound:
+            status = "⚠️ User not banned on server"
+        except Exception as e:
+            status = f"⚠️ Unban failed: {str(e)[:50]}"
+        
+        await interaction.followup.send(f"Removed {userid} from redlist. {status}", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
+
 @bot.event
 async def on_member_join(member: discord.Member):
     if member.guild.id != GUILD_ID:
