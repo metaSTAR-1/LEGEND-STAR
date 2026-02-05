@@ -921,15 +921,15 @@ def generate_leaderboard_text(cam_on_list, cam_off_list):
     
     text += """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✨ Auto Generated at **11:55 PM**
+✨ Auto Generated at **11:59 PM**
 🔄 Daily Reset at **11:59 PM**
 🔥 Keep Grinding Legends!
 """
     return text
 
-@tasks.loop(time=datetime.time(23, 55, tzinfo=KOLKATA))
+@tasks.loop(time=datetime.time(23, 59, tzinfo=KOLKATA))
 async def auto_leaderboard_ping():
-    """Auto ping at 23:55 IST to announce leaderboard with top 5"""
+    """Auto ping at 23:59 IST to announce leaderboard with top 5"""
     if GUILD_ID <= 0 or not mongo_connected:
         return
     guild = bot.get_guild(GUILD_ID)
@@ -946,7 +946,7 @@ async def auto_leaderboard_ping():
         
         ping_text = f"{role.mention} 🏆 **Leaderboard Published With Top 5 Performers!**\n✨ Check the rankings below and compete for glory! ✨"
         await channel.send(ping_text)
-        print(f"✅ Auto ping sent at 23:55 IST to {role.name}")
+        print(f"✅ Auto ping sent at 23:59 IST to {role.name}")
     except Exception as e:
         print(f"⚠️ Auto ping error: {str(e)[:100]}")
 
