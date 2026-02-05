@@ -9,59 +9,79 @@ def format_time(minutes: int) -> str:
 
 
 def get_medal_emoji(position: int) -> str:
-    # Updated medal logic:
-    # 1 -> 💎👑, 2 -> 🥇, 3 -> 🥈, 4-10 -> 🥉, 11+ -> 🎯
+    # 1 -> ????, 2 -> ??, 3 -> ??, 4-10 -> ???, 11+ -> ??
     if position == 1:
-        return "💎👑"
+        return "\U0001F48E\U0001F451"
     if position == 2:
-        return "🥇"
+        return "\U0001F948"
     if position == 3:
-        return "🥈"
+        return "\U0001F949"
     if 4 <= position <= 10:
-        return "🥉"
-    return "🎯"
+        return "\U0001F396\uFE0F"
+    return "\U0001F3AF"
 
 
 def generate_leaderboard_text(cam_on_list, cam_off_list):
-    now = datetime.datetime.now().strftime("%d %b %Y | %I:%M %p")
+    """Render the /lb message (top 5) like the provided screenshot."""
+    try:
+        from zoneinfo import ZoneInfo
+        now_dt = datetime.datetime.now(ZoneInfo('Asia/Kolkata'))
+    except Exception:
+        now_dt = datetime.datetime.now()
 
-    text = f"""
-╔════════════════════════════════════════════╗
-        🏆 LEGEND STAR 🏆
-     🌙 Daily Leaderboard Champion 🌙
-        ⏰ {now} IST
-╚════════════════════════════════════════════╝
+    now = now_dt.strftime('%d %b %Y | %I:%M %p')
 
-📹 **CAM ON — TOP 5**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
+    # Only show users who actually studied today (mins > 0).
+    cam_on_filtered = [(n, m) for n, m in cam_on_list if (m or 0) > 0]
+    cam_off_filtered = [(n, m) for n, m in cam_off_list if (m or 0) > 0]
 
-    if cam_on_list:
-        for i, (name, mins) in enumerate(cam_on_list[:5], 1):
+    border_top = '\u2554' + ('\u2550' * 54) + '\u2557'
+    border_bot = '\u255a' + ('\u2550' * 54) + '\u255d'
+    rule = '\u2501' * 54
+
+    trophy = '\U0001F3C6'
+    moon = '\U0001F319'
+    clock = '\u23F0'
+    cam_on_icon = '\U0001F4F9'  # video camera
+    cam_off_icon = '\U0001F4F4'  # cam off
+
+    em_dash = '\u2014'
+    stopwatch = '\u23F1\uFE0F'
+
+    text = (
+        f"{border_top}\n"
+        f"        {trophy} LEGEND STAR {trophy}\n"
+        f"     {moon} Daily Leaderboard Champion {moon}\n"
+        f"        {clock} {now} IST\n"
+        f"{border_bot}\n\n"
+        f"{cam_on_icon} **CAM ON {em_dash} TOP 5**\n"
+        f"{rule}\n"
+    )
+
+    if cam_on_filtered:
+        for i, (name, mins) in enumerate(cam_on_filtered[:5], 1):
             medal = get_medal_emoji(i)
-            text += f"{medal}  #{i} **{name}** — ⏱ {format_time(mins)}\n"
+            text += f"{medal}  #{i} **{name}** {em_dash} {stopwatch} {format_time(int(mins))}\n"
     else:
-        text += "📚 *No data yet. Start studying!*\n"
+        text += '\U0001F4DA *No data yet. Start studying!*\n'
 
-    text += """
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📴 **CAM OFF — TOP 5**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
+    text += f"\n{rule}\n"
+    text += f"{cam_off_icon} **CAM OFF {em_dash} TOP 5**\n"
+    text += f"{rule}\n"
 
-    if cam_off_list:
-        for i, (name, mins) in enumerate(cam_off_list[:5], 1):
+    if cam_off_filtered:
+        for i, (name, mins) in enumerate(cam_off_filtered[:5], 1):
             medal = get_medal_emoji(i)
-            text += f"{medal}  #{i} **{name}** — ⏱ {format_time(mins)}\n"
+            text += f"{medal}  #{i} **{name}** {em_dash} {stopwatch} {format_time(int(mins))}\n"
     else:
-        text += "🤐 *No silent sessions yet.*\n"
+        text += '\U0001F910 *No silent sessions yet.*\n'
 
-    text += """
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✨ Auto Generated at **11:55 PM**
-🔄 Daily Reset at **11:59 PM**
-🔥 Keep Grinding Legends!
-"""
+    text += (
+        f"\n{rule}\n"
+        '\u2728 Auto Generated at **11:59 PM**\n'
+        '\U0001F504 Daily Reset at **11:59 PM**\n'
+        '\U0001F525 Keep Grinding Legends!'
+    )
     return text
 
 

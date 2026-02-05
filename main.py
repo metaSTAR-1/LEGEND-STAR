@@ -872,47 +872,8 @@ async def before_batch_save():
 
 # ==================== LEADERBOARDS ====================
 
-def generate_leaderboard_text(cam_on_list, cam_off_list):
-    """Generate beautiful leaderboard text with medals and decorations"""
-    now = datetime.datetime.now(KOLKATA).strftime("%d %b %Y | %I:%M %p")
-    
-    text = f"""
-╔════════════════════════════════════════════╗
-        🏆 LEGEND STAR 🏆
-     🌙 Daily Leaderboard Champion 🌙
-        ⏰ {now} IST
-╚════════════════════════════════════════════╝
+# Leaderboard text formatting lives in leaderboard.py (imported above).
 
-📹 **CAM ON — TOP 5**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
-    
-    if cam_on_list:
-        for i, (name, mins) in enumerate(cam_on_list[:5], 1):
-            medal = get_medal_emoji(i)
-            text += f"{medal}  #{i} **{name}** — ⏱ {format_time(mins)}\n"
-    else:
-        text += "📚 *No data yet. Start studying!*\n"
-    
-    text += """
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📴 **CAM OFF — TOP 5**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
-    
-    if cam_off_list:
-        for i, (name, mins) in enumerate(cam_off_list[:5], 1):
-            medal = get_medal_emoji(i)
-            text += f"{medal}  #{i} **{name}** — ⏱ {format_time(mins)}\n"
-    else:
-        text += "🤐 *No silent sessions yet.*\n"
-    
-    text += """
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✨ Auto Generated at **11:59 PM**
-🔄 Daily Reset at **11:59 PM**
-🔥 Keep Grinding Legends!
-"""
 # helpers imported from leaderboard.py to avoid import-time side-effects
 
 @tasks.loop(time=datetime.time(23, 59, tzinfo=KOLKATA))
@@ -1027,45 +988,101 @@ async def lb(interaction: discord.Interaction):
         
         docs = safe_find(users_coll, {}, limit=100)
         print(f"🔍 /lb command: Found {len(docs)} total documents in MongoDB")
-        print(f"   ℹ️  Fetching data from all {len(docs)} users...")
+        
+        if not docs:
+            print(f"⚠️ No documents found in MongoDB! Showing empty leaderboard.")
+            leaderboard_text = generate_leaderboard_text([], [])
+            await interaction.followup.send(f"```{leaderboard_text}```")
+            return
+        
+        print(f"   ℹ️  Processing {len(docs)} users...")
         
         active = []
-        # Use guild.members cache for speed; fallback to fetching member if not cached
+        # Build member cache for fast lookups
         members_by_id = {m.id: m for m in interaction.guild.members}
-        print(f"   Guild has {len(members_by_id)} members")
+        print(f"   Guild has {len(members_by_id)} members in cache")
 
-        for doc in docs:
-            data = doc.get("data", {})
+        for idx, doc in enumerate(docs):
             try:
-                user_id = int(doc["_id"]) if isinstance(doc.get("_id"), (int, str)) else None
-                if not user_id:
+                # Get user ID (handle both string and int)
+                user_id_str = str(doc.get("_id", "")).strip()
+                
+                # Skip invalid IDs (like "mongodb_test")
+                if not user_id_str or not user_id_str.isdigit():
+                    print(f"   ⚠️ Skipping invalid ID: {user_id_str}")
                     continue
-
+                
+                user_id = int(user_id_str)
+                data = doc.get("data", {})
+                cam_on = data.get("voice_cam_on_minutes", 0)
+                cam_off = data.get("voice_cam_off_minutes", 0)
+                
+                # Skip users with no data
+                if cam_on == 0 and cam_off == 0:
+                    continue
+                
+                # Try to get member name from guild cache first
                 m = members_by_id.get(user_id)
-                if not m:
-                    # Try to fetch member from API as a fallback (may be slow)
+                display_name = None
+                
+                if m:
+                    display_name = m.display_name
+                    source = "cache"
+                else:
+                    # Try to fetch member from API
                     try:
                         m = await interaction.guild.fetch_member(user_id)
+                        display_name = m.display_name
+                        source = "api"
                     except Exception:
-                        m = None
+                        # User not in guild anymore - try to fetch user data directly
+                        try:
+                            user = await bot.fetch_user(user_id)
+                            display_name = user.name
+                            source = "user_api"
+                        except Exception:
+                            # Last resort - use ID as display name
+                            display_name = f"[{user_id}]"
+                            source = "fallback"
+                
+                if display_name:
+                    active.append({"name": display_name, "cam_on": cam_on, "cam_off": cam_off})
+                    print(f"   ✅ {display_name}: CAM_ON={cam_on}min, CAM_OFF={cam_off}min ({source})")
+                    
+            except Exception as e:
+                print(f"   ⚠️ Error processing doc {idx}: {str(e)[:80]}")
 
-                if m:
-                    active.append({"name": m.display_name, "cam_on": data.get("voice_cam_on_minutes", 0), "cam_off": data.get("voice_cam_off_minutes", 0)})
-            except Exception:
-                pass
-
+        print(f"   📊 Total active users with data: {len(active)}")
+        
+        if not active:
+            print(f"   ℹ️  No users with study time found")
+            leaderboard_text = generate_leaderboard_text([], [])
+            await interaction.followup.send(f"```{leaderboard_text}```")
+            return
+        
         sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)
         sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)
 
         cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on]
         cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off]
 
+        print(f"   CAM_ON top 3: {cam_on_data[:3]}")
+        print(f"   CAM_OFF top 3: {cam_off_data[:3]}")
+
         leaderboard_text = generate_leaderboard_text(cam_on_data, cam_off_data)
+        
+        if leaderboard_text is None:
+            print(f"⚠️ ERROR: generate_leaderboard_text returned None!")
+            await interaction.followup.send("⚠️ Error generating leaderboard text.")
+            return
+        
         await interaction.followup.send(f"```{leaderboard_text}```")
-        print(f"✅ /lb command: leaderboard sent")
+        print(f"✅ /lb command: leaderboard sent successfully")
     except Exception as e:
-        print(f"⚠️ /lb command error: {e}")
-        await interaction.followup.send("⚠️ Failed to generate leaderboard. Try again later.")
+        print(f"⚠️ /lb command error: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        await interaction.followup.send(f"⚠️ Failed to generate leaderboard: {str(e)[:100]}")
 
 
 # Per-user rank command (/rank)
