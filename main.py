@@ -1030,14 +1030,25 @@ async def lb(interaction: discord.Interaction):
         print(f"   ℹ️  Fetching data from all {len(docs)} users...")
         
         active = []
-        # Use guild.members cache instead of fetching (faster)
+        # Use guild.members cache for speed; fallback to fetching member if not cached
         members_by_id = {m.id: m for m in interaction.guild.members}
         print(f"   Guild has {len(members_by_id)} members")
 
         for doc in docs:
             data = doc.get("data", {})
             try:
-                m = interaction.guild.get_member(int(doc["_id"]))
+                user_id = int(doc["_id"]) if isinstance(doc.get("_id"), (int, str)) else None
+                if not user_id:
+                    continue
+
+                m = members_by_id.get(user_id)
+                if not m:
+                    # Try to fetch member from API as a fallback (may be slow)
+                    try:
+                        m = await interaction.guild.fetch_member(user_id)
+                    except Exception:
+                        m = None
+
                 if m:
                     active.append({"name": m.display_name, "cam_on": data.get("voice_cam_on_minutes", 0), "cam_off": data.get("voice_cam_off_minutes", 0)})
             except Exception:
