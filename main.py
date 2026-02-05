@@ -1103,76 +1103,7 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
         await interaction.followup.send("⚠️ Failed to generate rank. Try again later.", ephemeral=True)
 
 
-# /mystatus - show current day's stats for requester (but computes ranks from all server members)
-@tree.command(name="mystatus", description="Show your today's CAM ON / CAM OFF stats and rank", guild=GUILD)
-@checks.cooldown(1, 5)
-async def mystatus(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        if not mongo_connected:
-            return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
-
-        target = interaction.user
-
-        docs = safe_find(users_coll, {}, limit=2000)
-        active = []
-        for doc in docs:
-            data = doc.get("data", {})
-            try:
-                m = interaction.guild.get_member(int(doc["_id"]))
-                name = m.display_name if m else doc.get("_id")
-                active.append({"name": name, "cam_on": data.get("voice_cam_on_minutes", 0), "cam_off": data.get("voice_cam_off_minutes", 0)})
-            except Exception:
-                continue
-
-        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)
-        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)
-
-        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on if u["cam_on"] > 0]
-        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off if u["cam_off"] > 0]
-
-        summary = user_rank(target.display_name, cam_on_data, cam_off_data)
-        await interaction.followup.send(f"```{summary}```", ephemeral=True)
-    except Exception as e:
-        print(f"⚠️ /mystatus error: {e}")
-        await interaction.followup.send("⚠️ Failed to get status. Try again later.", ephemeral=True)
-
-
-# /yst - yesterday stats (preserved during midnight reset)
-@tree.command(name="yst", description="Show your yesterday's CAM ON / CAM OFF stats and rank", guild=GUILD)
-@checks.cooldown(1, 5)
-async def yst(interaction: discord.Interaction, member: discord.Member = None):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        if not mongo_connected:
-            return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
-
-        target = member or interaction.user
-
-        docs = safe_find(users_coll, {}, limit=2000)
-        active = []
-        for doc in docs:
-            data = doc.get("data", {})
-            try:
-                m = interaction.guild.get_member(int(doc["_id"]))
-                name = m.display_name if m else doc.get("_id")
-                y_on = data.get("yesterday", {}).get("cam_on", 0)
-                y_off = data.get("yesterday", {}).get("cam_off", 0)
-                active.append({"name": name, "cam_on": y_on, "cam_off": y_off})
-            except Exception:
-                continue
-
-        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)
-        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)
-
-        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on if u["cam_on"] > 0]
-        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off if u["cam_off"] > 0]
-
-        summary = user_rank(target.display_name, cam_on_data, cam_off_data)
-        await interaction.followup.send(f"```{summary}```", ephemeral=True)
-    except Exception as e:
-        print(f"⚠️ /yst error: {e}")
-        await interaction.followup.send("⚠️ Failed to get yesterday's stats. Try again later.", ephemeral=True)
+# Note: `mystatus` and `yst` are implemented later in the file (preserved original versions)
         
         for doc in docs:
             try:
