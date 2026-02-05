@@ -252,7 +252,7 @@ def init_mongo():
         todo_coll = db["todo_timestamps"]
         redlist_coll = db["redlist"]
         active_members_coll = db["active_members"]
-    except:
+    except Exception as e:
         db = None
         users_coll = None
         todo_coll = None
@@ -595,7 +595,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 await member.move_to(None, reason="VC abuse")
                 await member.timeout(timedelta(minutes=5), reason="VC hopping")
                 track_activity(member.id, "Timeout for VC abuse")
-            except:
+            except Exception:
                 pass
 
     # Save voice time IMMEDIATELY when leaving or changing settings
@@ -713,7 +713,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                                     )
                                     embed_kick.set_footer(text="Camera enforcement in strict channels")
                                     await channel.send(embed=embed_kick, delete_after=15)
-                                except:
+                                except Exception:
                                     pass
                                 
                                 # 📧 SEND DM TO USER ABOUT ENFORCEMENT
@@ -724,7 +724,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                                         color=discord.Color.red()
                                     )
                                     await member.send(embed=embed_dm)
-                                except:
+                                except Exception:
                                     pass
                                 
                             except Exception as e:
@@ -873,20 +873,63 @@ async def before_batch_save():
     print("✅ batch_save_study loop started")
 
 # ==================== LEADERBOARDS ====================
-def get_medal_emoji(position: int, cam_type: str) -> str:
-    """Get creative medal emojis based on position and cam type"""
+def get_medal_emoji(position: int) -> str:
+    """Get creative medal emojis based on position"""
     medals = {
-        1: {"on": "🥇 GOLDEN LEGEND", "off": "🥇 KING OF SILENCE"},
-        2: {"on": "🥈 SILVER STAR", "off": "🥈 NOBLE SILENT"},
-        3: {"on": "🥉 BRONZE WARRIOR", "off": "🥉 SILENT KNIGHT"},
-        4: {"on": "💎 DIAMOND SPARK", "off": "💎 QUIET MASTER"},
-        5: {"on": "🏆 CHAMPION'S CROWN", "off": "🏆 ELITE QUIET FORCE"}
+        1: "💎👑",
+        2: "🥇",
+        3: "🥈",
+        4: "🥉",
+        5: "🏅"
     }
-    return medals.get(position, {}).get(cam_type, "⭐")
+    return medals.get(position, "⭐")
 
-@tasks.loop(time=datetime.time(11, 55, tzinfo=KOLKATA))
+def generate_leaderboard_text(cam_on_list, cam_off_list):
+    """Generate beautiful leaderboard text with medals and decorations"""
+    now = datetime.datetime.now(KOLKATA).strftime("%d %b %Y | %I:%M %p")
+    
+    text = f"""
+╔════════════════════════════════════════════╗
+        🏆 LEGEND STAR 🏆
+     🌙 Daily Leaderboard Champion 🌙
+        ⏰ {now} IST
+╚════════════════════════════════════════════╝
+
+📹 **CAM ON — TOP 5**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+    
+    if cam_on_list:
+        for i, (name, mins) in enumerate(cam_on_list[:5], 1):
+            medal = get_medal_emoji(i)
+            text += f"{medal}  #{i} **{name}** — ⏱ {format_time(mins)}\n"
+    else:
+        text += "📚 *No data yet. Start studying!*\n"
+    
+    text += """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📴 **CAM OFF — TOP 5**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+    
+    if cam_off_list:
+        for i, (name, mins) in enumerate(cam_off_list[:5], 1):
+            medal = get_medal_emoji(i)
+            text += f"{medal}  #{i} **{name}** — ⏱ {format_time(mins)}\n"
+    else:
+        text += "🤐 *No silent sessions yet.*\n"
+    
+    text += """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✨ Auto Generated at **11:55 PM**
+🔄 Daily Reset at **11:59 PM**
+🔥 Keep Grinding Legends!
+"""
+    return text
+
+@tasks.loop(time=datetime.time(23, 55, tzinfo=KOLKATA))
 async def auto_leaderboard_ping():
-    """Auto ping at 11:55 IST to announce leaderboard"""
+    """Auto ping at 23:55 IST to announce leaderboard with top 5"""
     if GUILD_ID <= 0 or not mongo_connected:
         return
     guild = bot.get_guild(GUILD_ID)
@@ -901,15 +944,15 @@ async def auto_leaderboard_ping():
             print(f"⚠️ Auto ping role {AUTO_LB_PING_ROLE_ID} not found")
             return
         
-        ping_text = f"{role.mention} 📊 **Leaderboard Published With Top 5 Performers!**\n✨ Check the rankings below and compete for glory! ✨"
+        ping_text = f"{role.mention} 🏆 **Leaderboard Published With Top 5 Performers!**\n✨ Check the rankings below and compete for glory! ✨"
         await channel.send(ping_text)
-        print(f"✅ Auto ping sent at 11:55 IST to {role.name}")
+        print(f"✅ Auto ping sent at 23:55 IST to {role.name}")
     except Exception as e:
-        print(f"⚠️ Auto ping error: {str(e)[:80]}")
+        print(f"⚠️ Auto ping error: {str(e)[:100]}")
 
-@tasks.loop(time=datetime.time(23, 55, tzinfo=KOLKATA))
+@tasks.loop(time=datetime.time(23, 59, tzinfo=KOLKATA))
 async def auto_leaderboard():
-    """Auto leaderboard at 23:55 IST - shows today's data before reset at 23:59 (TOP 5 ONLY)"""
+    """Auto leaderboard at 23:59 IST - shows today's TOP 5 data before reset"""
     if GUILD_ID <= 0 or not mongo_connected:
         return
     guild = bot.get_guild(GUILD_ID)
@@ -928,46 +971,22 @@ async def auto_leaderboard():
                 m = guild.get_member(int(doc["_id"]))
                 if m:
                     active.append({"name": m.display_name, "cam_on": data.get("voice_cam_on_minutes", 0), "cam_off": data.get("voice_cam_off_minutes", 0)})
-            except:
+            except Exception:
                 pass
         
-        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:5]  # TOP 5 ONLY
-        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:5]  # TOP 5 ONLY
+        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)
+        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)
         
-        # ✨ Creative Leaderboard with Medals
-        desc = "🎯 **═════════════════════════════════════**\n"
-        desc += "📹 **CAM ON LEGENDS (Top 5)**\n"
-        desc += "✨ **═════════════════════════════════════**\n"
+        # Convert to list of tuples for formatting
+        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on if u["cam_on"] > 0]
+        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off if u["cam_off"] > 0]
         
-        if sorted_on:
-            for i, u in enumerate(sorted_on, 1):
-                if u["cam_on"] > 0:
-                    medal = get_medal_emoji(i, "on")
-                    desc += f"{medal} | **{u['name']}** → {format_time(u['cam_on'])}\n"
-        else:
-            desc += "*No data yet. Start studying!* 📚\n"
+        leaderboard_text = generate_leaderboard_text(cam_on_data, cam_off_data)
         
-        desc += "\n🎯 **═════════════════════════════════════**\n"
-        desc += "🤫 **SILENT STUDIERS (Top 5)**\n"
-        desc += "✨ **═════════════════════════════════════**\n"
-        
-        if sorted_off:
-            for i, u in enumerate(sorted_off, 1):
-                if u["cam_off"] > 0:
-                    medal = get_medal_emoji(i, "off")
-                    desc += f"{medal} | **{u['name']}** → {format_time(u['cam_off'])}\n"
-        else:
-            desc += "*No silent sessions yet.* 🤐\n"
-        
-        desc += "\n🌟 **═════════════════════════════════════**"
-        
-        embed = discord.Embed(title="🌙 DAILY CHAMPIONS SHOWCASE 🌙", description=desc, color=0xFFD700, timestamp=now_ist)
-        embed.set_footer(text="⏰ Reset at 23:59 IST | 💪 Keep grinding, legends!")
-        embed.set_thumbnail(url="https://cdn-icons-png.flaticon.com/512/4436/4436481.png")
-        await channel.send(embed=embed)
-        print(f"✅ Auto leaderboard posted at 23:55 IST with TOP 5 performers")
+        await channel.send(f"```{leaderboard_text}```")
+        print(f"✅ Auto leaderboard posted at 23:59 IST with TOP 5 performers")
     except Exception as e:
-        print(f"⚠️ Auto leaderboard error: {str(e)[:80]}")
+        print(f"⚠️ Auto leaderboard error: {str(e)[:100]}")
 
 @tasks.loop(time=datetime.time(23, 59, tzinfo=KOLKATA))
 async def midnight_reset():
@@ -1049,41 +1068,16 @@ async def lb(interaction: discord.Interaction):
                 continue
         
         print(f"   ✅ Processed {len(docs)} documents, {len(active)} have data")
-        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:5]  # TOP 5 ONLY
-        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:5]  # TOP 5 ONLY
+        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:15]  # TOP 15 CAM ON
+        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:10]  # TOP 10 CAM OFF
         
-        # ✨ Creative Leaderboard Design with Medals
-        desc = "🎯 **═════════════════════════════════════**\n"
-        desc += "📹 **CAM ON LEGENDS (Top 5)**\n"
-        desc += "✨ **═════════════════════════════════════**\n"
+        # ✨ Beautiful Leaderboard Design
+        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on if u["cam_on"] > 0]
+        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off if u["cam_off"] > 0]
         
-        if sorted_on:
-            for i, u in enumerate(sorted_on, 1):
-                if u["cam_on"] > 0:
-                    medal = get_medal_emoji(i, "on")
-                    desc += f"{medal} | **{u['name']}** → {format_time(u['cam_on'])}\n"
-        else:
-            desc += "*No data yet. Start studying!* 📚\n"
+        leaderboard_text = generate_leaderboard_text(cam_on_data, cam_off_data)
         
-        desc += "\n🎯 **═════════════════════════════════════**\n"
-        desc += "🤫 **SILENT STUDIERS (Top 5)**\n"
-        desc += "✨ **═════════════════════════════════════**\n"
-        
-        if sorted_off:
-            for i, u in enumerate(sorted_off, 1):
-                if u["cam_off"] > 0:
-                    medal = get_medal_emoji(i, "off")
-                    desc += f"{medal} | **{u['name']}** → {format_time(u['cam_off'])}\n"
-        else:
-            desc += "*No silent sessions yet.* 🤐\n"
-        
-        desc += "\n🌟 **═════════════════════════════════════**\n"
-        desc += "💪 **Keep Grinding & Become a Legend!** 🚀"
-        
-        embed = discord.Embed(title="🏆 ULTIMATE STUDY CHAMPIONS 🏆", description=desc, color=0xFFD700)
-        embed.set_footer(text="⏰ Resets daily at midnight IST | 🎯 Top 5 Winners Only")
-        embed.set_thumbnail(url="https://cdn-icons-png.flaticon.com/512/4436/4436481.png")
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(f"```{leaderboard_text}```")
     except Exception as e:
         error_msg = str(e)
         if "SSL" in error_msg or "handshake" in error_msg:
@@ -1254,17 +1248,17 @@ async def on_member_join(member: discord.Member):
             if m.joined_at and (now - m.joined_at.timestamp()) < RAID_WINDOW:
                 try:
                     await m.ban(reason="Raid protection")
-                except:
+                except Exception:
                     pass
     if safe_find_one(redlist_coll, {"_id": str(member.id)}):
         try:
             await member.ban(reason="Redlist")
-        except:
+        except Exception:
             pass
     if member.bot and member.id not in WHITELISTED_BOTS:
         try:
             await member.ban(reason="Non-whitelisted bot")
-        except:
+        except Exception:
             pass
 
 # ==================== TODO HELPERS ====================
@@ -1442,7 +1436,7 @@ async def todo(
             channel = guild.get_channel(TODO_CHANNEL_ID)
             if channel:
                 await channel.send(embed=embed)
-    except:
+    except Exception:
         pass
     
     await interaction.followup.send("✅ TODO posted for everyone!")
@@ -1568,7 +1562,7 @@ async def atodo(
             channel = guild.get_channel(TODO_CHANNEL_ID)
             if channel:
                 await channel.send(embed=embed)
-    except:
+    except Exception:
         pass
     
     await interaction.followup.send(f"✅ TODO assigned to {user.mention}!")
@@ -1611,7 +1605,7 @@ async def todo_checker():
                 if role and role in member.roles:
                     try:
                         await member.remove_roles(role)
-                    except:
+                    except Exception:
                         pass
             
             # Ping if inactive 24+ hours AND haven't pinged in 3+ hours
@@ -1630,12 +1624,12 @@ async def todo_checker():
                 try:
                     await channel.send(embed=embed)
                     await member.send(embed=embed)
-                except:
+                except Exception:
                     pass
                 
                 # Update ping timestamp
                 safe_update_one(todo_coll, {"_id": str(uid)}, {"$set": {"last_ping": now}})
-        except:
+        except Exception:
             pass
 
 
@@ -1745,7 +1739,7 @@ async def mz(interaction: discord.Interaction, target: discord.User, message: st
         try:
             await target.send(content, files=files)
             await interaction.followup.send(f"Sent anonymously to {target}", ephemeral=True)
-        except:
+        except Exception:
             await interaction.followup.send("DM failed (blocked?).", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
@@ -1801,13 +1795,13 @@ async def bn(interaction: discord.Interaction, target: str, reason: str = "Force
         if target.isdigit():
             try:
                 member = await interaction.guild.fetch_member(int(target))
-            except:
+            except Exception:
                 pass
         elif target.startswith("<@"):
             clean = target.strip("<@!>").strip(">")
             try:
                 member = await interaction.guild.fetch_member(int(clean))
-            except:
+            except Exception:
                 pass
         else:
             member = discord.utils.find(lambda m: m.name == target or m.display_name == target, interaction.guild.members)
@@ -2061,7 +2055,7 @@ async def on_message(message: discord.Message):
         if is_dm:
             try:
                 await message.author.send("✅ Your message has been forwarded to the owner.")
-            except:
+            except Exception:
                 pass
         
         # Don't process further for DMs
@@ -2525,7 +2519,7 @@ async def lockdown_guild(guild: discord.Guild):
     for channel in guild.channels:
         try:
             await channel.set_permissions(everyone, overwrite=overwrite)
-        except:
+        except Exception:
             pass
     tech_channel = bot.get_channel(TECH_CHANNEL_ID)
     if tech_channel:
@@ -2644,7 +2638,8 @@ async def on_ready():
     
     print(f"\n📊 Starting Background Tasks:")
     print(f"   🕐 batch_save_study: Every 30 seconds")
-    print(f"   🏆 auto_leaderboard: Daily at 23:55 IST")
+    print(f"   📍 auto_leaderboard_ping: Daily at 23:55 IST")
+    print(f"   🏆 auto_leaderboard: Daily at 23:59 IST")
     print(f"   🌙 midnight_reset: Daily at 23:59 IST")
     print(f"   ⏰ todo_checker: Every 3 hours")
     print(f"   🔗 clean_webhooks: Every 5 minutes")
@@ -2652,6 +2647,7 @@ async def on_ready():
     print(f"{'='*70}\n")
     
     batch_save_study.start()
+    auto_leaderboard_ping.start()
     auto_leaderboard.start()
     midnight_reset.start()
     todo_checker.start()
