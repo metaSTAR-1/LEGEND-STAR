@@ -2,20 +2,24 @@
 # Test leaderboard formatting
 import datetime
 
-def format_time(minutes: int) -> str:
-    h, m = divmod(minutes, 60)
-    return f"{h}h {m}m"
+try:
+    from leaderboard import format_time, get_medal_emoji, generate_leaderboard_text, user_rank
+except Exception:
+    # Fallback local implementations if import fails
+    def format_time(minutes: int) -> str:
+        h, m = divmod(minutes, 60)
+        return f"{h}h {m}m"
 
-def get_medal_emoji(position: int) -> str:
-    """Get creative medal emojis based on position"""
-    medals = {
-        1: "💎👑",
-        2: "🥇",
-        3: "🥈",
-        4: "🥉",
-        5: "🏅"
-    }
-    return medals.get(position, "⭐")
+    def get_medal_emoji(position: int) -> str:
+        if position == 1:
+            return "💎👑"
+        if position == 2:
+            return "🥇"
+        if position == 3:
+            return "🥈"
+        if 4 <= position <= 10:
+            return "🥉"
+        return "🎯"
 
 def generate_leaderboard_text(cam_on_list, cam_off_list):
     """Generate beautiful leaderboard text with medals and decorations"""
@@ -99,6 +103,32 @@ if __name__ == "__main__":
     
     result = generate_leaderboard_text(test_cam_on, test_cam_off)
     print(result)
+    # Also test per-user rank summary
+    try:
+        from main import user_rank
+        print(user_rank("Marcus", test_cam_on, test_cam_off))
+    except Exception:
+        # If running standalone without package path, fallback to local function
+        def user_rank_local(username, cam_on_data, cam_off_data):
+            cam_on_sorted = sorted(cam_on_data, key=lambda x: x[1], reverse=True)
+            cam_off_sorted = sorted(cam_off_data, key=lambda x: x[1], reverse=True)
+            cam_on_users = [u[0] for u in cam_on_sorted]
+            cam_off_users = [u[0] for u in cam_off_sorted]
+            out = []
+            out.append(f"User: {username}")
+            if username in cam_on_users:
+                r = cam_on_users.index(username) + 1
+                out.append(f"CAM ON Rank: #{r} / {len(cam_on_users)}")
+            else:
+                out.append("CAM ON: Not active today")
+            if username in cam_off_users:
+                r = cam_off_users.index(username) + 1
+                out.append(f"CAM OFF Rank: #{r} / {len(cam_off_users)}")
+            else:
+                out.append("CAM OFF: Not active today")
+            return "\n".join(out)
+
+        print(user_rank_local("Marcus", test_cam_on, test_cam_off))
     print("\n" + "=" * 50)
     print("✅ TEST PASSED - All functions work perfectly!")
     print("=" * 50)

@@ -529,9 +529,7 @@ join_times = defaultdict(list)
 vc_cache = defaultdict(list)
 last_audit_id = None  # Track last processed audit entry to prevent duplicates
 
-def format_time(minutes: int) -> str:
-    h, m = divmod(minutes, 60)
-    return f"{h}h {m}m"
+from leaderboard import format_time, get_medal_emoji, generate_leaderboard_text, user_rank
 
 def track_activity(user_id: int, action: str):
     ts = datetime.datetime.now(KOLKATA).strftime("%d/%m %H:%M:%S")
@@ -873,16 +871,6 @@ async def before_batch_save():
     print("✅ batch_save_study loop started")
 
 # ==================== LEADERBOARDS ====================
-def get_medal_emoji(position: int) -> str:
-    """Get creative medal emojis based on position"""
-    medals = {
-        1: "💎👑",
-        2: "🥇",
-        3: "🥈",
-        4: "🥉",
-        5: "🏅"
-    }
-    return medals.get(position, "⭐")
 
 def generate_leaderboard_text(cam_on_list, cam_off_list):
     """Generate beautiful leaderboard text with medals and decorations"""
@@ -925,7 +913,7 @@ def generate_leaderboard_text(cam_on_list, cam_off_list):
 🔄 Daily Reset at **11:59 PM**
 🔥 Keep Grinding Legends!
 """
-    return text
+# helpers imported from leaderboard.py to avoid import-time side-effects
 
 @tasks.loop(time=datetime.time(23, 59, tzinfo=KOLKATA))
 async def auto_leaderboard_ping():
@@ -1045,6 +1033,146 @@ async def lb(interaction: discord.Interaction):
         # Use guild.members cache instead of fetching (faster)
         members_by_id = {m.id: m for m in interaction.guild.members}
         print(f"   Guild has {len(members_by_id)} members")
+
+        for doc in docs:
+            data = doc.get("data", {})
+            try:
+                m = interaction.guild.get_member(int(doc["_id"]))
+                if m:
+                    active.append({"name": m.display_name, "cam_on": data.get("voice_cam_on_minutes", 0), "cam_off": data.get("voice_cam_off_minutes", 0)})
+            except Exception:
+                pass
+
+        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)
+        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)
+
+        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on if u["cam_on"] > 0]
+        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off if u["cam_off"] > 0]
+
+        leaderboard_text = generate_leaderboard_text(cam_on_data, cam_off_data)
+        await interaction.followup.send(f"```{leaderboard_text}```")
+        print(f"✅ /lb command: leaderboard sent")
+    except Exception as e:
+        print(f"⚠️ /lb command error: {e}")
+        await interaction.followup.send("⚠️ Failed to generate leaderboard. Try again later.", ephemeral=True)
+
+
+# Per-user rank command (/rank)
+@tree.command(name="rank", description="Show a user's CAM ON / CAM OFF rank", guild=GUILD)
+@checks.cooldown(1, 10)
+async def rank(interaction: discord.Interaction, member: discord.Member = None):
+    """Slash command to show the per-user rank summary.
+
+    This command is intentionally implemented as a standalone feature and
+    only reads from the DB; it does not modify any existing structures.
+    """
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if not mongo_connected:
+            return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
+
+        target = member or interaction.user
+
+        # Collect today's data (same approach as auto_leaderboard)
+        docs = safe_find(users_coll, {}, limit=1000)
+        active = []
+        for doc in docs:
+            data = doc.get("data", {})
+            try:
+                m = interaction.guild.get_member(int(doc["_id"]))
+                if m:
+                    active.append({
+                        "name": m.display_name,
+                        "cam_on": data.get("voice_cam_on_minutes", 0),
+                        "cam_off": data.get("voice_cam_off_minutes", 0)
+                    })
+            except Exception:
+                continue
+
+        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)
+        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)
+
+        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on if u["cam_on"] > 0]
+        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off if u["cam_off"] > 0]
+
+        summary = user_rank(target.display_name, cam_on_data, cam_off_data)
+        # Send as code block for monospaced alignment; ephemeral to requester
+        await interaction.followup.send(f"```{summary}```", ephemeral=True)
+    except Exception as e:
+        print(f"⚠️ /rank command error: {e}")
+        await interaction.followup.send("⚠️ Failed to generate rank. Try again later.", ephemeral=True)
+
+
+# /mystatus - show current day's stats for requester (but computes ranks from all server members)
+@tree.command(name="mystatus", description="Show your today's CAM ON / CAM OFF stats and rank", guild=GUILD)
+@checks.cooldown(1, 5)
+async def mystatus(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if not mongo_connected:
+            return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
+
+        target = interaction.user
+
+        docs = safe_find(users_coll, {}, limit=2000)
+        active = []
+        for doc in docs:
+            data = doc.get("data", {})
+            try:
+                m = interaction.guild.get_member(int(doc["_id"]))
+                name = m.display_name if m else doc.get("_id")
+                active.append({"name": name, "cam_on": data.get("voice_cam_on_minutes", 0), "cam_off": data.get("voice_cam_off_minutes", 0)})
+            except Exception:
+                continue
+
+        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)
+        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)
+
+        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on if u["cam_on"] > 0]
+        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off if u["cam_off"] > 0]
+
+        summary = user_rank(target.display_name, cam_on_data, cam_off_data)
+        await interaction.followup.send(f"```{summary}```", ephemeral=True)
+    except Exception as e:
+        print(f"⚠️ /mystatus error: {e}")
+        await interaction.followup.send("⚠️ Failed to get status. Try again later.", ephemeral=True)
+
+
+# /yst - yesterday stats (preserved during midnight reset)
+@tree.command(name="yst", description="Show your yesterday's CAM ON / CAM OFF stats and rank", guild=GUILD)
+@checks.cooldown(1, 5)
+async def yst(interaction: discord.Interaction, member: discord.Member = None):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if not mongo_connected:
+            return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
+
+        target = member or interaction.user
+
+        docs = safe_find(users_coll, {}, limit=2000)
+        active = []
+        for doc in docs:
+            data = doc.get("data", {})
+            try:
+                m = interaction.guild.get_member(int(doc["_id"]))
+                name = m.display_name if m else doc.get("_id")
+                y_on = data.get("yesterday", {}).get("cam_on", 0)
+                y_off = data.get("yesterday", {}).get("cam_off", 0)
+                active.append({"name": name, "cam_on": y_on, "cam_off": y_off})
+            except Exception:
+                continue
+
+        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)
+        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)
+
+        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on if u["cam_on"] > 0]
+        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off if u["cam_off"] > 0]
+
+        summary = user_rank(target.display_name, cam_on_data, cam_off_data)
+        await interaction.followup.send(f"```{summary}```", ephemeral=True)
+    except Exception as e:
+        print(f"⚠️ /yst error: {e}")
+        await interaction.followup.send("⚠️ Failed to get yesterday's stats. Try again later.", ephemeral=True)
         
         for doc in docs:
             try:
