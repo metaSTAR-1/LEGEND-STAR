@@ -965,9 +965,9 @@ async def auto_leaderboard():
         sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)
         sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)
         
-        # Convert to list of tuples for formatting
-        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on if u["cam_on"] > 0]
-        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off if u["cam_off"] > 0]
+        # Convert to list of tuples for formatting (include everyone, even 0 minutes)
+        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on]
+        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off]
         
         leaderboard_text = generate_leaderboard_text(cam_on_data, cam_off_data)
         
@@ -1046,8 +1046,8 @@ async def lb(interaction: discord.Interaction):
         sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)
         sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)
 
-        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on if u["cam_on"] > 0]
-        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off if u["cam_off"] > 0]
+        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on]
+        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off]
 
         leaderboard_text = generate_leaderboard_text(cam_on_data, cam_off_data)
         await interaction.followup.send(f"```{leaderboard_text}```")
@@ -1066,7 +1066,7 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
     This command is intentionally implemented as a standalone feature and
     only reads from the DB; it does not modify any existing structures.
     """
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
     try:
         if not mongo_connected:
             return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
@@ -1092,15 +1092,15 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
         sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)
         sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)
 
-        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on if u["cam_on"] > 0]
-        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off if u["cam_off"] > 0]
+        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on]
+        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off]
 
         summary = user_rank(target.display_name, cam_on_data, cam_off_data)
-        # Send as code block for monospaced alignment; ephemeral to requester
-        await interaction.followup.send(f"```{summary}```", ephemeral=True)
+        # Send as code block for monospaced alignment; public message
+        await interaction.followup.send(f"```{summary}```")
     except Exception as e:
         print(f"⚠️ /rank command error: {e}")
-        await interaction.followup.send("⚠️ Failed to generate rank. Try again later.", ephemeral=True)
+        await interaction.followup.send("⚠️ Failed to generate rank. Try again later.")
 
 
 # Note: `mystatus` and `yst` are implemented later in the file (preserved original versions)
@@ -1131,8 +1131,8 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
         sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:10]  # TOP 10 CAM OFF
         
         # ✨ Beautiful Leaderboard Design
-        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on if u["cam_on"] > 0]
-        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off if u["cam_off"] > 0]
+        cam_on_data = [(u["name"], u["cam_on"]) for u in sorted_on]
+        cam_off_data = [(u["name"], u["cam_off"]) for u in sorted_off]
         
         leaderboard_text = generate_leaderboard_text(cam_on_data, cam_off_data)
         
@@ -1210,20 +1210,20 @@ async def mystatus(interaction: discord.Interaction):
 
 @tree.command(name="yst", description="Your yesterday’s stats", guild=GUILD)
 async def yst(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
     try:
         doc = safe_find_one(users_coll, {"_id": str(interaction.user.id)})
         if not doc or "data" not in doc or "yesterday" not in doc["data"]:
-            return await interaction.followup.send("No yesterday data.", ephemeral=True)
+            return await interaction.followup.send("No yesterday data.")
         y = doc["data"]["yesterday"]
         total = y.get("cam_on", 0) + y.get("cam_off", 0)
         embed = discord.Embed(title=f"🗓️ Yesterday Stats: {interaction.user.name}", color=0x808080)
         embed.add_field(name="Total", value=format_time(total), inline=True)
         embed.add_field(name="Cam On", value=format_time(y.get("cam_on", 0)), inline=True)
         embed.add_field(name="Cam Off", value=format_time(y.get("cam_off", 0)), inline=True)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed)
     except Exception as e:
-        await interaction.followup.send(f"Error loading stats: {str(e)[:100]}", ephemeral=True)
+        await interaction.followup.send(f"Error loading stats: {str(e)[:100]}")
 
 # ==================== REDLIST ====================
 @tree.command(name="redban", description="Ban a user & store in redlist", guild=GUILD)
