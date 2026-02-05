@@ -1023,7 +1023,7 @@ async def lb(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
         if not mongo_connected:
-            return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
+            return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.")
         
         docs = safe_find(users_coll, {}, limit=100)
         print(f"🔍 /lb command: Found {len(docs)} total documents in MongoDB")
@@ -1054,7 +1054,7 @@ async def lb(interaction: discord.Interaction):
         print(f"✅ /lb command: leaderboard sent")
     except Exception as e:
         print(f"⚠️ /lb command error: {e}")
-        await interaction.followup.send("⚠️ Failed to generate leaderboard. Try again later.", ephemeral=True)
+        await interaction.followup.send("⚠️ Failed to generate leaderboard. Try again later.")
 
 
 # Per-user rank command (/rank)
@@ -1069,7 +1069,7 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
     await interaction.response.defer()
     try:
         if not mongo_connected:
-            return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
+            return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.")
 
         target = member or interaction.user
 
@@ -1140,16 +1140,16 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
     except Exception as e:
         error_msg = str(e)
         if "SSL" in error_msg or "handshake" in error_msg:
-            await interaction.followup.send("📡 Database connection issue. Please try again later.", ephemeral=True)
+            await interaction.followup.send("📡 Database connection issue. Please try again later.")
         else:
-            await interaction.followup.send(f"Error loading leaderboard: {str(e)[:100]}", ephemeral=True)
+            await interaction.followup.send(f"Error loading leaderboard: {str(e)[:100]}")
 
 @tree.command(name="ylb", description="Yesterday’s leaderboard", guild=GUILD)
 async def ylb(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
         if not mongo_connected:
-            return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
+            return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.")
         
         docs = safe_find(users_coll, {"data.yesterday": {"$exists": True}})
         active = []
@@ -1176,22 +1176,22 @@ async def ylb(interaction: discord.Interaction):
     except Exception as e:
         error_msg = str(e)
         if "SSL" in error_msg or "handshake" in error_msg:
-            await interaction.followup.send("📡 Database connection issue. Please try again later.", ephemeral=True)
+            await interaction.followup.send("📡 Database connection issue. Please try again later.")
         else:
-            await interaction.followup.send(f"Error loading yesterday leaderboard: {str(e)[:100]}", ephemeral=True)
+            await interaction.followup.send(f"Error loading yesterday leaderboard: {str(e)[:100]}")
 
 @tree.command(name="mystatus", description="Your personal VC + cam stats", guild=GUILD)
 async def mystatus(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
 
     try:
         doc = safe_find_one(users_coll, {"_id": str(interaction.user.id)})
     except Exception as e:
-        await interaction.followup.send(f"DB Error: {e}", ephemeral=True)
+        await interaction.followup.send(f"DB Error: {e}")
         return
 
     if not doc or "data" not in doc:
-        return await interaction.followup.send("No stats yet.", ephemeral=True)
+        return await interaction.followup.send("No stats yet.")
 
     data = doc["data"]
     total = data.get("voice_cam_on_minutes", 0) + data.get("voice_cam_off_minutes", 0)
@@ -1229,34 +1229,34 @@ async def yst(interaction: discord.Interaction):
 @tree.command(name="redban", description="Ban a user & store in redlist", guild=GUILD)
 @app_commands.describe(userid="User ID")
 async def redban(interaction: discord.Interaction, userid: str):
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
     try:
         if interaction.user.id != OWNER_ID:
-            return await interaction.followup.send("Owner only", ephemeral=True)
+            return await interaction.followup.send("Owner only")
         if not userid.isdigit():
-            return await interaction.followup.send("Invalid ID", ephemeral=True)
+            return await interaction.followup.send("Invalid ID")
         safe_update_one(redlist_coll, {"_id": userid}, {"$set": {"added": datetime.datetime.now(KOLKATA)}})
         try:
             await interaction.guild.ban(discord.Object(id=int(userid)), reason="Redlist")
         except Exception as e:
             print(f"Ban error: {e}")
-        await interaction.followup.send(f"Redlisted {userid}", ephemeral=True)
+        await interaction.followup.send(f"Redlisted {userid}")
     except Exception as e:
-        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
+        await interaction.followup.send(f"Error: {str(e)[:100]}")
 
 @tree.command(name="redlist", description="Show banned / restricted users", guild=GUILD)
 async def redlist(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
     try:
         if interaction.user.id != OWNER_ID:
-            return await interaction.followup.send("Owner only", ephemeral=True)
+            return await interaction.followup.send("Owner only")
         ids = [doc["_id"] for doc in safe_find(redlist_coll, {})]
         if not ids:
-            return await interaction.followup.send("Empty redlist.", ephemeral=True)
+            return await interaction.followup.send("Empty redlist.")
         msg = "Redlist IDs:\n" + "\n".join(f"- {i}" for i in ids)
-        await interaction.followup.send(msg, ephemeral=True)
+        await interaction.followup.send(msg)
     except Exception as e:
-        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
+        await interaction.followup.send(f"Error: {str(e)[:100]}")
 
 @tree.command(name="removeredban", description="Remove a user from redlist & unban", guild=GUILD)
 @app_commands.describe(userid="User ID to remove from redlist")
