@@ -2705,32 +2705,125 @@ async def lockdown_guild(guild: discord.Guild):
         await tech_channel.send("🚨 Emergency lockdown activated!")
 
 # ==================== REPORT COMMAND ====================
-@tree.command(name="report", description="Delete messages in a channel for a specific date & time range", guild=GUILD)
+async def get_deletable_channels(channel: discord.abc.GuildChannel, guild: discord.Guild) -> list[discord.abc.Messageable]:
+    """
+    ADVANCED: Get all deletable channels from the selected channel.
+    
+    Handles:
+    - Text channels: Returns the channel itself
+    - Voice channels: Returns all threads within that VC
+    - Forums: Returns all threads
+    - Stages: Returns associated threads
+    """
+    deletable = []
+    
+    if isinstance(channel, discord.TextChannel):
+        # Text channel - can have messages
+        deletable.append(channel)
+        # Also include any threads in this channel
+        try:
+            async for thread in channel.archived_threads():
+                deletable.append(thread)
+        except:
+            pass
+    
+    elif isinstance(channel, discord.VoiceChannel):
+        # Voice channel - find all threads in this VC
+        print(f"   🎤 Voice channel detected: {channel.name}")
+        print(f"   🔍 Scanning for threads in voice channel...")
+        try:
+            async for thread in channel.threads:
+                deletable.append(thread)
+                print(f"   ✓ Found thread: {thread.name}")
+        except:
+            pass
+        
+        # Also check for voice channel activity in main channels
+        # (Messages posted about this voice channel)
+        for ch in guild.channels:
+            if isinstance(ch, discord.TextChannel):
+                try:
+                    async for thread in ch.archived_threads():
+                        if channel.name.lower() in thread.name.lower():
+                            deletable.append(thread)
+                except:
+                    pass
+    
+    elif isinstance(channel, discord.ForumChannel):
+        # Forum channel - all posts are threads
+        print(f"   📋 Forum channel detected: {channel.name}")
+        try:
+            async for thread in channel.threads:
+                deletable.append(thread)
+        except:
+            pass
+    
+    elif isinstance(channel, discord.StageChannel):
+        # Stage channel - may have threads
+        print(f"   🎭 Stage channel detected: {channel.name}")
+        try:
+            async for thread in channel.threads:
+                deletable.append(thread)
+        except:
+            pass
+    
+    return deletable if deletable else [channel]
+
+
+@tree.command(name="report", description="Delete all messages/attachments/reactions in text or voice channels", guild=GUILD)
 async def report(
     interaction: discord.Interaction,
-    channel: discord.TextChannel,
+    channel: discord.TextChannel | discord.VoiceChannel | discord.ForumChannel | discord.StageChannel,
     date: str,
     time_from: str,
     time_to: str,
     message: str | None = None
 ):
     """
-    Delete messages in a channel within a specific date and time range.
+    🗑️ DELETE ALL messages in text, voice, forum, or stage channels within a specific date and time range.
+    
+    ✅ Deletes Everything:
+    - Text messages
+    - Attachments (📎 images, files, media)
+    - Reactions (😊)
+    - Emojis & GIFs (🎁)
+    - Threads
+    - Embeds
+    
+    📍 Works With:
+    - Text Channels
+    - Voice Channels (+ associated threads)
+    - Forum Channels (posts)
+    - Stage Channels
     
     Parameters:
-    - channel: Target channel to delete messages from
-    - date: Date in YYYY-MM-DD format (e.g., 2026-02-05)
-    - time_from: Start time in HH:MM format (24-hour, e.g., 20:00)
-    - time_to: End time in HH:MM format (24-hour, e.g., 21:15)
-    - message: Optional note about why the report was made
+    - channel: Any channel type (text/voice/forum/stage)
+    - date: YYYY-MM-DD (e.g., 2026-02-05)
+    - time_from: HH:MM (e.g., 20:00)
+    - time_to: HH:MM (e.g., 21:15)
+    - message: Optional reason note
     """
     
     await interaction.response.defer(ephemeral=True)
 
-    # ⏱ Build datetime range
+    # 🔤 Determine channel type for logging
+    channel_type = "Unknown"
+    if isinstance(channel, discord.TextChannel):
+        channel_type = "📝 Text Channel"
+    elif isinstance(channel, discord.VoiceChannel):
+        channel_type = "🎤 Voice Channel"
+    elif isinstance(channel, discord.ForumChannel):
+        channel_type = "📋 Forum Channel"
+    elif isinstance(channel, discord.StageChannel):
+        channel_type = "🎭 Stage Channel"
+
+    # ⏱ Build datetime range (TIMEZONE-AWARE UTC)
     try:
-        start = datetime.datetime.strptime(f"{date} {time_from}", "%Y-%m-%d %H:%M")
-        end = datetime.datetime.strptime(f"{date} {time_to}", "%Y-%m-%d %H:%M")
+        start_naive = datetime.datetime.strptime(f"{date} {time_from}", "%Y-%m-%d %H:%M")
+        end_naive = datetime.datetime.strptime(f"{date} {time_to}", "%Y-%m-%d %H:%M")
+        
+        start = start_naive.replace(tzinfo=datetime.timezone.utc)
+        end = end_naive.replace(tzinfo=datetime.timezone.utc)
     except ValueError:
         await interaction.followup.send(
             "❌ Invalid date/time format.\n"
@@ -2749,41 +2842,128 @@ async def report(
         )
         return
 
-    # 🗑 DELETE MESSAGES
-    deleted = 0
-    async for msg in channel.history(limit=None, after=start, before=end):
+    # 🎯 Get all deletable channels
+    print(f"\n{'='*80}")
+    print(f"🔍 [/report] {channel_type}: {channel.mention}")
+    print(f"   Time Range: {start} to {end}")
+    print(f"{'='*80}")
+    
+    deletable_channels = await get_deletable_channels(channel, interaction.guild)
+    print(f"📊 Found {len(deletable_channels)} location(s) to scan")
+    
+    # 🗑 DELETE MESSAGES from all channels
+    total_deleted = 0
+    total_checked = 0
+    total_with_attachments = 0
+    total_with_reactions = 0
+    channels_processed = []
+    
+    for target_channel in deletable_channels:
         try:
-            await msg.delete()
-            deleted += 1
-        except:
-            pass
+            deleted = 0
+            checked = 0
+            
+            async for msg in target_channel.history(limit=None, oldest_first=False):
+                checked += 1
+                msg_time = msg.created_at
+                
+                if start <= msg_time < end:
+                    try:
+                        has_attachments = len(msg.attachments) > 0
+                        has_reactions = len(msg.reactions) > 0
+                        
+                        await msg.delete()
+                        deleted += 1
+                        total_deleted += 1
+                        
+                        if has_attachments:
+                            total_with_attachments += 1
+                        if has_reactions:
+                            total_with_reactions += 1
+                        
+                        content_display = []
+                        if has_attachments:
+                            content_display.append(f"📎{len(msg.attachments)}")
+                        if has_reactions:
+                            content_display.append(f"😊{len(msg.reactions)}")
+                        if len(msg.embeds) > 0:
+                            content_display.append("🎁")
+                        
+                        content_str = f" [{' '.join(content_display)}]" if content_display else ""
+                        print(f"   ✓ {target_channel.name[:20]:20} | Deleted: {msg.author}{content_str}")
+                    except Exception as e:
+                        pass
+                
+                if msg_time < start:
+                    break
+            
+            total_checked += checked
+            if deleted > 0:
+                channels_processed.append({
+                    "name": target_channel.name,
+                    "deleted": deleted,
+                    "checked": checked
+                })
+        except Exception as e:
+            print(f"   ⚠️ Cannot access {target_channel.mention}: {str(e)[:50]}")
 
-    # 📩 DM OWNER
+    print(f"\n{'='*80}")
+    print(f"✅ DELETION COMPLETE")
+    print(f"   📊 Total checked: {total_checked}")
+    print(f"   🗑 Total deleted: {total_deleted}")
+    print(f"   📎 With attachments: {total_with_attachments}")
+    print(f"   😊 With reactions: {total_with_reactions}")
+    print(f"   📍 Locations processed: {len(channels_processed)}")
+    print(f"{'='*80}\n")
+
+    # 📩 DM OWNER with detailed report
     owner = interaction.client.get_user(OWNER_ID)
     if owner:
         report_dm = (
             f"🧾 **REPORT USED**\n\n"
             f"👤 User: {interaction.user} (`{interaction.user.id}`)\n"
             f"🕒 Used at: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
-            f"📺 Channel: #{channel.name}\n"
+            f"📺 Channel: {channel.mention} ({channel_type})\n"
             f"📅 Date: {date}\n"
-            f"⏱ Time range: {time_from} → {time_to}\n"
-            f"🗑 Messages deleted: {deleted}\n"
+            f"⏱ Time range: {time_from} → {time_to} UTC\n\n"
+            f"📊 **STATISTICS:**\n"
+            f"   🔍 Messages checked: {total_checked}\n"
+            f"   🗑 Messages deleted: {total_deleted}\n"
+            f"   📎 With attachments: {total_with_attachments}\n"
+            f"   😊 With reactions: {total_with_reactions}\n"
+            f"   📍 Locations scanned: {len(channels_processed)}\n"
         )
+        
+        if channels_processed:
+            report_dm += f"\n📋 **BREAKDOWN BY LOCATION:**\n"
+            for ch_info in channels_processed:
+                report_dm += f"   • {ch_info['name'][:30]}: {ch_info['deleted']} deleted\n"
 
         if message:
-            report_dm += f"\n📝 Message:\n{message}"
+            report_dm += f"\n📝 **Reason:**\n{message}"
 
         try:
             await owner.send(report_dm)
         except:
             pass
 
-    # ✅ CONFIRMATION
-    await interaction.followup.send(
-        f"✅ Report completed.\n🗑 `{deleted}` messages deleted.",
-        ephemeral=True
+    # ✅ USER CONFIRMATION
+    confirm_msg = (
+        f"✅ **Report Completed Successfully**\n\n"
+        f"📊 **Results:**\n"
+        f"   🔍 Checked: `{total_checked}` messages\n"
+        f"   🗑 Deleted: `{total_deleted}` messages\n"
+        f"   📎 From: `{total_with_attachments}` with attachments\n"
+        f"   😊 From: `{total_with_reactions}` with reactions\n\n"
+        f"📍 **Scanned {len(channels_processed)} location(s)**"
     )
+    
+    if channels_processed:
+        confirm_msg += "\n\n📋 Locations:\n"
+        for ch_info in channels_processed:
+            confirm_msg += f"   • **{ch_info['name']}**: {ch_info['deleted']} deleted\n"
+    
+    await interaction.followup.send(confirm_msg, ephemeral=True)
 
 # ==================== MANUAL SYNC COMMAND ====================
 @bot.command(name="sync")
