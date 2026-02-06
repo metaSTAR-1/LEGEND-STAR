@@ -2862,6 +2862,22 @@ async def report(
         try:
             deleted = 0
             checked = 0
+            # Check bot permissions for this channel
+            try:
+                bot_member = interaction.guild.me
+                perms = target_channel.permissions_for(bot_member)
+            except Exception:
+                perms = None
+            if perms and not perms.manage_messages:
+                print(f"   ⚠️ Skipping {getattr(target_channel,'name',str(target_channel))}: missing Manage Messages permission")
+                channels_processed.append({
+                    "name": getattr(target_channel, 'name', str(target_channel)),
+                    "deleted": 0,
+                    "checked": 0,
+                    "skipped": "missing_manage_messages"
+                })
+                continue
+            deletion_errors = []
             
             async for msg in target_channel.history(limit=None, oldest_first=False):
                 checked += 1
@@ -2892,7 +2908,10 @@ async def report(
                         content_str = f" [{' '.join(content_display)}]" if content_display else ""
                         print(f"   ✓ {target_channel.name[:20]:20} | Deleted: {msg.author}{content_str}")
                     except Exception as e:
-                        pass
+                        # Record deletion error for owner report and console
+                        err = str(e)
+                        deletion_errors.append((msg.id, err))
+                        print(f"   ✗ Failed to delete {target_channel.name[:20]} msg {msg.id}: {err}")
                 
                 if msg_time < start:
                     break
@@ -2903,6 +2922,14 @@ async def report(
                     "name": target_channel.name,
                     "deleted": deleted,
                     "checked": checked
+                })
+            # attach any deletion errors to channels_processed for reporting
+            if deletion_errors:
+                channels_processed.append({
+                    "name": getattr(target_channel,'name',str(target_channel))[:30],
+                    "deleted": deleted,
+                    "checked": checked,
+                    "errors": deletion_errors
                 })
         except Exception as e:
             print(f"   ⚠️ Cannot access {target_channel.mention}: {str(e)[:50]}")
