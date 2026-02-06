@@ -71,6 +71,10 @@ EXCLUDED_VOICE_CHANNEL_ID = 1466076240111992954
 # Strict channels
 STRICT_CHANNEL_IDS = {"1428762702414872636", "1455906399262605457", "1455582132218106151", "1427325474551500851", "1428762820585062522"}
 
+# Soft automod marker role names (delete-only enforcement)
+NOPING_ROLE = "NoPing"
+NOMSG_ROLE = "NoMessage"
+DEFAULT_REASON = "Previously warned by automod"
 # Bot whitelist
 WHITELISTED_BOTS = [
     1457787743504695501, 1456587533474463815, 1427522983789989960, 155149108183695360,
@@ -536,6 +540,58 @@ def track_activity(user_id: int, action: str):
     user_activity[user_id].append(f"[{ts}] {action}")
     if len(user_activity[user_id]) > 20:
         user_activity[user_id].pop(0)
+
+
+# --------------------
+# Soft automod /action
+# --------------------
+@tree.command(name="action", description="Soft automod control (delete-only)", guild=GUILD)
+@app_commands.check(lambda interaction: interaction.user.id == OWNER_ID)
+async def action(
+    interaction: discord.Interaction,
+    target: discord.Member | discord.Role,
+    ping: bool,
+    message: bool,
+    reason: str = DEFAULT_REASON
+):
+    guild = interaction.guild
+    noping = discord.utils.get(guild.roles, name=NOPING_ROLE)
+    nomsg = discord.utils.get(guild.roles, name=NOMSG_ROLE)
+
+    # Auto-create marker roles if missing (admins only)
+    try:
+        if not noping:
+            noping = await guild.create_role(name=NOPING_ROLE, reason="Created by automod /action command")
+        if not nomsg:
+            nomsg = await guild.create_role(name=NOMSG_ROLE, reason="Created by automod /action command")
+    except Exception:
+        # If role creation fails, continue — command can still operate if roles exist
+        pass
+
+    if isinstance(target, discord.Role):
+        await interaction.response.send_message(
+            f"✅ Action applied to role **{target.name}**",
+            ephemeral=True
+        )
+        return
+
+    # 👤 USER TARGET
+    if not ping and noping:
+        await target.add_roles(noping, reason=reason)
+    if ping and noping and noping in target.roles:
+        await target.remove_roles(noping, reason="Ping allowed")
+
+    if not message and nomsg:
+        await target.add_roles(nomsg, reason=reason)
+    if message and nomsg and nomsg in target.roles:
+        await target.remove_roles(nomsg, reason="Message allowed")
+
+    await interaction.response.send_message(
+        f"🛡️ Soft action updated for {target.mention}",
+        ephemeral=True
+    )
+
+# (Registered with @tree.command)
 
 # ==================== VOICE & CAM ====================
 @bot.event
@@ -2198,6 +2254,35 @@ async def on_message(message: discord.Message):
     # IMMUNITY CHECK
     if message.author.id == OWNER_ID or message.author == bot.user:
         return
+
+    # -------------------------
+    # Soft automod enforcement
+    # - If user has NoMessage role -> delete any message (delete-only)
+    # - If user has NoPing role -> delete message only when it contains an '@'
+    # -------------------------
+    try:
+        guild = message.guild
+        if guild:
+            noping = discord.utils.get(guild.roles, name=NOPING_ROLE)
+            nomsg = discord.utils.get(guild.roles, name=NOMSG_ROLE)
+            roles = message.author.roles
+
+            if nomsg and nomsg in roles:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                return
+
+            if noping and noping in roles and message.content and "@" in message.content:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                return
+    except Exception:
+        # Fail silently to avoid breaking other protections
+        pass
 
     # B. MALWARE UPLOAD (.exe) -> INSTANT BAN
     if message.attachments:
