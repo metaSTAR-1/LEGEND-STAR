@@ -876,9 +876,9 @@ async def before_batch_save():
 
 # helpers imported from leaderboard.py to avoid import-time side-effects
 
-@tasks.loop(time=datetime.time(23, 59, tzinfo=KOLKATA))
+@tasks.loop(time=datetime.time(23, 55, tzinfo=KOLKATA))
 async def auto_leaderboard_ping():
-    """Auto ping at 23:59 IST to announce leaderboard with top 5"""
+    """Auto ping at 23:55 IST to announce leaderboard with top 5"""
     if GUILD_ID <= 0 or not mongo_connected:
         return
     guild = bot.get_guild(GUILD_ID)
@@ -895,13 +895,13 @@ async def auto_leaderboard_ping():
         
         ping_text = f"{role.mention} 🏆 **Leaderboard Published With Top 5 Performers!**\n✨ Check the rankings below and compete for glory! ✨"
         await channel.send(ping_text)
-        print(f"✅ Auto ping sent at 23:59 IST to {role.name}")
+        print(f"✅ Auto ping sent at 23:55 IST to {role.name}")
     except Exception as e:
         print(f"⚠️ Auto ping error: {str(e)[:100]}")
 
-@tasks.loop(time=datetime.time(23, 59, tzinfo=KOLKATA))
+@tasks.loop(time=datetime.time(23, 55, tzinfo=KOLKATA))
 async def auto_leaderboard():
-    """Auto leaderboard at 23:59 IST - shows today's TOP 5 data before reset"""
+    """Auto leaderboard at 23:55 IST - shows today's TOP 5 data before reset"""
     if GUILD_ID <= 0 or not mongo_connected:
         return
     guild = bot.get_guild(GUILD_ID)
@@ -916,10 +916,17 @@ async def auto_leaderboard():
         active = []
         for doc in docs:
             data = doc.get("data", {})
+            cam_on = data.get("voice_cam_on_minutes", 0)
+            cam_off = data.get("voice_cam_off_minutes", 0)
+            
+            # Skip users with no data (same filter as /lb command)
+            if cam_on == 0 and cam_off == 0:
+                continue
+            
             try:
                 m = guild.get_member(int(doc["_id"]))
                 if m:
-                    active.append({"name": m.display_name, "cam_on": data.get("voice_cam_on_minutes", 0), "cam_off": data.get("voice_cam_off_minutes", 0)})
+                    active.append({"name": m.display_name, "cam_on": cam_on, "cam_off": cam_off})
             except Exception:
                 pass
         
@@ -933,7 +940,7 @@ async def auto_leaderboard():
         leaderboard_text = generate_leaderboard_text(cam_on_data, cam_off_data)
         
         await channel.send(f"```{leaderboard_text}```")
-        print(f"✅ Auto leaderboard posted at 23:59 IST with TOP 5 performers")
+        print(f"✅ Auto leaderboard posted at 23:55 IST with TOP 5 performers | Users with data: {len(active)}")
     except Exception as e:
         print(f"⚠️ Auto leaderboard error: {str(e)[:100]}")
 
@@ -2726,7 +2733,7 @@ async def on_ready():
     print(f"\n📊 Starting Background Tasks:")
     print(f"   🕐 batch_save_study: Every 30 seconds")
     print(f"   📍 auto_leaderboard_ping: Daily at 23:55 IST")
-    print(f"   🏆 auto_leaderboard: Daily at 23:59 IST")
+    print(f"   🏆 auto_leaderboard: Daily at 23:55 IST")
     print(f"   🌙 midnight_reset: Daily at 23:59 IST")
     print(f"   ⏰ todo_checker: Every 3 hours")
     print(f"   🔗 clean_webhooks: Every 5 minutes")

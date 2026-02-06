@@ -78,7 +78,7 @@ def generate_leaderboard_text(cam_on_list, cam_off_list):
 
     text += (
         f"\n{rule}\n"
-        '\u2728 Auto Generated at **11:59 PM**\n'
+        '\u2728 Auto Generated at **11:55 PM**\n'
         '\U0001F504 Daily Reset at **11:59 PM**\n'
         '\U0001F525 Keep Grinding Legends!'
     )
