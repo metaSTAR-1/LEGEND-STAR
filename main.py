@@ -2704,6 +2704,87 @@ async def lockdown_guild(guild: discord.Guild):
     if tech_channel:
         await tech_channel.send("🚨 Emergency lockdown activated!")
 
+# ==================== REPORT COMMAND ====================
+@tree.command(name="report", description="Delete messages in a channel for a specific date & time range", guild=GUILD)
+async def report(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    date: str,
+    time_from: str,
+    time_to: str,
+    message: str | None = None
+):
+    """
+    Delete messages in a channel within a specific date and time range.
+    
+    Parameters:
+    - channel: Target channel to delete messages from
+    - date: Date in YYYY-MM-DD format (e.g., 2026-02-05)
+    - time_from: Start time in HH:MM format (24-hour, e.g., 20:00)
+    - time_to: End time in HH:MM format (24-hour, e.g., 21:15)
+    - message: Optional note about why the report was made
+    """
+    
+    await interaction.response.defer(ephemeral=True)
+
+    # ⏱ Build datetime range
+    try:
+        start = datetime.datetime.strptime(f"{date} {time_from}", "%Y-%m-%d %H:%M")
+        end = datetime.datetime.strptime(f"{date} {time_to}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        await interaction.followup.send(
+            "❌ Invalid date/time format.\n"
+            "Use:\n"
+            "`date = YYYY-MM-DD`\n"
+            "`time_from = HH:MM`\n"
+            "`time_to = HH:MM`",
+            ephemeral=True
+        )
+        return
+
+    if start >= end:
+        await interaction.followup.send(
+            "❌ `time_from` must be earlier than `time_to`.",
+            ephemeral=True
+        )
+        return
+
+    # 🗑 DELETE MESSAGES
+    deleted = 0
+    async for msg in channel.history(limit=None, after=start, before=end):
+        try:
+            await msg.delete()
+            deleted += 1
+        except:
+            pass
+
+    # 📩 DM OWNER
+    owner = interaction.client.get_user(OWNER_ID)
+    if owner:
+        report_dm = (
+            f"🧾 **REPORT USED**\n\n"
+            f"👤 User: {interaction.user} (`{interaction.user.id}`)\n"
+            f"🕒 Used at: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
+            f"📺 Channel: #{channel.name}\n"
+            f"📅 Date: {date}\n"
+            f"⏱ Time range: {time_from} → {time_to}\n"
+            f"🗑 Messages deleted: {deleted}\n"
+        )
+
+        if message:
+            report_dm += f"\n📝 Message:\n{message}"
+
+        try:
+            await owner.send(report_dm)
+        except:
+            pass
+
+    # ✅ CONFIRMATION
+    await interaction.followup.send(
+        f"✅ Report completed.\n🗑 `{deleted}` messages deleted.",
+        ephemeral=True
+    )
+
 # ==================== MANUAL SYNC COMMAND ====================
 @bot.command(name="sync")
 async def manual_sync(ctx):
