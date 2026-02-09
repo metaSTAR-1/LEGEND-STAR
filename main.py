@@ -2090,6 +2090,37 @@ async def ud_spy(interaction: discord.Interaction, user: discord.Member):
         await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
 
 
+@tree.command(name="ud_spyoff", description="Disable live spy on a user (Owner only)", guild=GUILD)
+@app_commands.describe(user="Target user")
+async def ud_spyoff(interaction: discord.Interaction, user: discord.Member):
+    """Disable real-time tracking for a user"""
+    await interaction.response.defer(ephemeral=True)
+
+    if interaction.user.id != OWNER_ID:
+        return await interaction.followup.send(
+            "❌ Only the server owner can use this.",
+            ephemeral=True
+        )
+
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "DELETE FROM spy_targets WHERE user_id=?",
+                (user.id,)
+            )
+            await db.commit()
+
+        if getattr(cur, 'rowcount', 0) == 0:
+            msg = f"ℹ️ **Spy mode was already OFF for {user.mention}.**"
+        else:
+            msg = f"🔕 **Spy mode DISABLED for {user.mention}.**"
+
+        await interaction.followup.send(msg, ephemeral=True)
+        print(f"🕵️ Spy disabled for {user} (ID: {user.id}) - rows={getattr(cur, 'rowcount', 0)}")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+
+
 @tree.command(name="ud_purge", description="Delete user messages across channels (Owner only)", guild=GUILD)
 @app_commands.describe(user="Target user", limit="Max messages to delete (default 50)")
 async def ud_purge(interaction: discord.Interaction, user: discord.Member, limit: int = 50):
