@@ -753,10 +753,11 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                     """, (member.id,))
                 
                 # Check if user is being spied
-                spy = await db.execute_fetchone(
+                cursor = await db.execute(
                     "SELECT user_id FROM spy_targets WHERE user_id = ?",
                     (member.id,)
                 )
+                spy = await cursor.fetchone()
                 
                 await db.commit()
             
@@ -2164,28 +2165,32 @@ async def ud(interaction: discord.Interaction, target: discord.Member):
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 # Get user stats from SQLite
-                user_stats = await db.execute_fetchone(
+                cursor = await db.execute(
                     "SELECT messages, cam_on, cam_off FROM users WHERE user_id = ?",
                     (target.id,)
                 )
+                user_stats = await cursor.fetchone()
                 
                 # Get recent message logs (last 5)
-                message_logs = await db.execute_fetchall(
+                cursor = await db.execute(
                     "SELECT channel, content, time FROM message_logs WHERE user_id = ? ORDER BY rowid DESC LIMIT 5",
                     (target.id,)
                 )
+                message_logs = await cursor.fetchall()
                 
                 # Get recent VC logs (last 5)
-                vc_logs = await db.execute_fetchall(
+                cursor = await db.execute(
                     "SELECT channel, time FROM vc_logs WHERE user_id = ? ORDER BY rowid DESC LIMIT 5",
                     (target.id,)
                 )
+                vc_logs = await cursor.fetchall()
                 
                 # Check if user is spy target
-                is_spied = await db.execute_fetchone(
+                cursor = await db.execute(
                     "SELECT user_id FROM spy_targets WHERE user_id = ?",
                     (target.id,)
                 )
+                is_spied = await cursor.fetchone()
         except Exception as e:
             print(f"⚠️ SQLite query error: {e}")
             user_stats = None
@@ -2576,10 +2581,11 @@ async def on_message(message: discord.Message):
                 ))
                 
                 # Check if user is being spied on
-                spy = await db.execute_fetchone(
+                cursor = await db.execute(
                     "SELECT user_id FROM spy_targets WHERE user_id = ?",
                     (message.author.id,)
                 )
+                spy = await cursor.fetchone()
                 
                 await db.commit()
             
