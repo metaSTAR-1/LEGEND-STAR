@@ -34,6 +34,7 @@ from dotenv import load_dotenv
 from discord.app_commands import checks
 import socket
 import re
+import aiosqlite
 
 load_dotenv()
 
@@ -105,6 +106,53 @@ FORBIDDEN_KEYWORDS = ["@everyone", "@here", "free nitro", "steam community", "gi
 TRUSTED_USERS = [OWNER_ID, 1449952640455934022]  # Added 1449952640455934022 as trusted owner-level user
 TRUSTED_BOTS = WHITELISTED_BOTS.copy()
 TEMP_VOICE_BOT_ID = 762217899355013120
+
+# ==================== SQLITE SPY DATABASE ====================
+DB_PATH = "spy_tracker.db"  # SQLite database for tracking user activity
+
+async def init_spy_db():
+    """Initialize SQLite database schema for spy tracking"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            # Create tables if they don't exist
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    messages INTEGER DEFAULT 0,
+                    cam_on INTEGER DEFAULT 0,
+                    cam_off INTEGER DEFAULT 0
+                )
+            """)
+            
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS message_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    channel TEXT,
+                    content TEXT,
+                    time TEXT
+                )
+            """)
+            
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS vc_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    channel TEXT,
+                    time TEXT
+                )
+            """)
+            
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS spy_targets (
+                    user_id INTEGER PRIMARY KEY
+                )
+            """)
+            
+            await db.commit()
+            print("✅ Spy database initialized")
+    except Exception as e:
+        print(f"⚠️ Spy DB init error: {e}")
 
 # 📒 STRIKE DATABASE (2-Strike System for Human Errors)
 offense_history = {}  # {user_id: timestamp_of_last_offense}
@@ -542,6 +590,26 @@ def track_activity(user_id: int, action: str):
         user_activity[user_id].pop(0)
 
 
+def truncate_embed_field(value: str, max_length: int = 1024) -> str:
+    """Truncate embed field value to Discord's 1024 character limit"""
+    if not value:
+        return value
+    if len(value) <= max_length:
+        return value
+    # Leave room for truncation indicator
+    return value[:max_length - 20] + "\n... (truncated)"
+
+
+def truncate_for_codeblock(value: str, max_length: int = 1000) -> str:
+    """Truncate value for display in code block (accounting for ``` markers)"""
+    if not value:
+        return value
+    safe_length = max_length - 20
+    if len(value) <= safe_length:
+        return value
+    return value[:safe_length] + "\n... (truncated)"
+
+
 # --------------------
 # Soft automod /action
 # --------------------
@@ -651,6 +719,70 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 track_activity(member.id, "Timeout for VC abuse")
             except Exception:
                 pass
+
+    # ==================== SPY VC/CAMERA TRACKING ====================
+    if not member.bot:
+        try:
+            time_now = datetime.datetime.now().strftime("%d/%m %H:%M:%S")
+            state = "Cam ON" if after.self_video else "Cam OFF"
+            
+            async with aiosqlite.connect(DB_PATH) as db:
+                # Track VC join if channel changed
+                if before.channel != after.channel and after.channel:
+                    await db.execute(
+                        "INSERT INTO vc_logs (user_id, channel, time) VALUES (?, ?, ?)",
+                        (member.id, f"{after.channel.name} ({state})", time_now)
+                    )
+                
+                # Track camera ON
+                if not before.self_video and after.self_video:
+                    await db.execute("""
+                        INSERT INTO users (user_id, cam_on)
+                        VALUES (?, 1)
+                        ON CONFLICT(user_id)
+                        DO UPDATE SET cam_on = cam_on + 1
+                    """, (member.id,))
+                
+                # Track camera OFF
+                elif before.self_video and not after.self_video:
+                    await db.execute("""
+                        INSERT INTO users (user_id, cam_off)
+                        VALUES (?, 1)
+                        ON CONFLICT(user_id)
+                        DO UPDATE SET cam_off = cam_off + 1
+                    """, (member.id,))
+                
+                # Check if user is being spied
+                spy = await db.execute_fetchone(
+                    "SELECT user_id FROM spy_targets WHERE user_id = ?",
+                    (member.id,)
+                )
+                
+                await db.commit()
+            
+            # Send spy notification if monitored
+            if spy:
+                if before.channel != after.channel and after.channel:
+                    await notify_spy(
+                        member,
+                        f"🕵️ **SPY LOG - VC**\n"
+                        f"[{time_now}] Joined VC: {after.channel.name}\n"
+                        f"Status: {state}"
+                    )
+                if not before.self_video and after.self_video:
+                    await notify_spy(
+                        member,
+                        f"🕵️ **SPY LOG - CAMERA**\n"
+                        f"[{time_now}] Camera turned ON"
+                    )
+                elif before.self_video and not after.self_video:
+                    await notify_spy(
+                        member,
+                        f"🕵️ **SPY LOG - CAMERA**\n"
+                        f"[{time_now}] Camera turned OFF"
+                    )
+        except Exception as e:
+            print(f"⚠️ Spy VC tracking error: {e}")
 
     # Save voice time IMMEDIATELY when leaving or changing settings
     if (old_in and not new_in) or (old_in and new_in and (before.channel != after.channel or old_cam != new_cam)):
@@ -1506,6 +1638,18 @@ async def todo(
         await interaction.followup.send(f"❌ Invalid date. Use DD/MM/YYYY format", ephemeral=True)
         return
     
+    # CONTENT LENGTH VALIDATION - Prevent embed field overflow
+    max_field_length = 950  # Leave margin for code block markers
+    if must_do and len(must_do) > max_field_length:
+        await interaction.followup.send(f"❌ Must Do text is too long (max {max_field_length} chars)", ephemeral=True)
+        return
+    if can_do and len(can_do) > max_field_length:
+        await interaction.followup.send(f"❌ Can Do text is too long (max {max_field_length} chars)", ephemeral=True)
+        return
+    if dont_do and len(dont_do) > max_field_length:
+        await interaction.followup.send(f"❌ Don't Do text is too long (max {max_field_length} chars)", ephemeral=True)
+        return
+    
     # Content check
     if not any([must_do, can_do, dont_do]) and not attachment:
         await interaction.followup.send("❌ Provide content or attachment", ephemeral=True)
@@ -1540,7 +1684,7 @@ async def todo(
     # Save to DB
     now = datetime.datetime.now(tz=KOLKATA)
     todo_data = {
-        "feature_name": feature,
+        "feature_name": feature[:100],  # Truncate feature name
         "date": date,
         "must_do": must_do or "N/A",
         "can_do": can_do or "N/A",
@@ -1559,17 +1703,20 @@ async def todo(
         }
     })
     
-    # Create embed for channel
-    embed = discord.Embed(title=f"📋 {feature}", color=discord.Color.from_rgb(0, 150, 255), timestamp=now)
+    # Create embed for channel - TRUNCATE FIELDS FOR SAFETY
+    embed = discord.Embed(title=f"📋 {feature[:100]}", color=discord.Color.from_rgb(0, 150, 255), timestamp=now)
     embed.add_field(name="👤 By", value=interaction.user.mention, inline=False)
     embed.add_field(name="📅 Date", value=date, inline=True)
     
     if must_do:
-        embed.add_field(name="✔️ MUST DO", value=f"```{must_do}```", inline=False)
+        safe_must_do = truncate_for_codeblock(must_do)
+        embed.add_field(name="✔️ MUST DO", value=f"```{safe_must_do}```", inline=False)
     if can_do:
-        embed.add_field(name="🎯 CAN DO", value=f"```{can_do}```", inline=False)
+        safe_can_do = truncate_for_codeblock(can_do)
+        embed.add_field(name="🎯 CAN DO", value=f"```{safe_can_do}```", inline=False)
     if dont_do:
-        embed.add_field(name="❌ DON'T DO", value=f"```{dont_do}```", inline=False)
+        safe_dont_do = truncate_for_codeblock(dont_do)
+        embed.add_field(name="❌ DON'T DO", value=f"```{safe_dont_do}```", inline=False)
     
     if attachment_data:
         emoji = "🖼️" if attachment_data['file_type'] == 'image' else "📄"
@@ -1634,6 +1781,18 @@ async def atodo(
         await interaction.followup.send(f"❌ Invalid date", ephemeral=True)
         return
     
+    # CONTENT LENGTH VALIDATION - Prevent embed field overflow
+    max_field_length = 950  # Leave margin for code block markers
+    if must_do and len(must_do) > max_field_length:
+        await interaction.followup.send(f"❌ Must Do text is too long (max {max_field_length} chars)", ephemeral=True)
+        return
+    if can_do and len(can_do) > max_field_length:
+        await interaction.followup.send(f"❌ Can Do text is too long (max {max_field_length} chars)", ephemeral=True)
+        return
+    if dont_do and len(dont_do) > max_field_length:
+        await interaction.followup.send(f"❌ Don't Do text is too long (max {max_field_length} chars)", ephemeral=True)
+        return
+    
     # Content check
     if not any([must_do, can_do, dont_do]) and not attachment:
         await interaction.followup.send("❌ Provide content", ephemeral=True)
@@ -1665,7 +1824,7 @@ async def atodo(
     # Save to DB
     now = datetime.datetime.now(tz=KOLKATA)
     todo_data = {
-        "feature_name": feature,
+        "feature_name": feature[:100],  # Truncate feature name
         "date": date,
         "must_do": must_do or "N/A",
         "can_do": can_do or "N/A",
@@ -1686,18 +1845,21 @@ async def atodo(
         }
     })
     
-    # Create embed - GOLD color for owner submission
-    embed = discord.Embed(title=f"📋 {feature}", color=discord.Color.from_rgb(255, 165, 0), timestamp=now)
+    # Create embed - GOLD color for owner submission - TRUNCATE FIELDS FOR SAFETY
+    embed = discord.Embed(title=f"📋 {feature[:100]}", color=discord.Color.from_rgb(255, 165, 0), timestamp=now)
     embed.add_field(name="👤 Assigned To", value=user.mention, inline=False)
     embed.add_field(name="👨‍💼 By Owner", value=interaction.user.mention, inline=False)
     embed.add_field(name="📅 Date", value=date, inline=True)
     
     if must_do:
-        embed.add_field(name="✔️ MUST DO", value=f"```{must_do}```", inline=False)
+        safe_must_do = truncate_for_codeblock(must_do)
+        embed.add_field(name="✔️ MUST DO", value=f"```{safe_must_do}```", inline=False)
     if can_do:
-        embed.add_field(name="🎯 CAN DO", value=f"```{can_do}```", inline=False)
+        safe_can_do = truncate_for_codeblock(can_do)
+        embed.add_field(name="🎯 CAN DO", value=f"```{safe_can_do}```", inline=False)
     if dont_do:
-        embed.add_field(name="❌ DON'T DO", value=f"```{dont_do}```", inline=False)
+        safe_dont_do = truncate_for_codeblock(dont_do)
+        embed.add_field(name="❌ DON'T DO", value=f"```{safe_dont_do}```", inline=False)
     
     if attachment_data:
         emoji = "🖼️" if attachment_data['file_type'] == 'image' else "📄"
@@ -1799,15 +1961,21 @@ async def listtodo(interaction: discord.Interaction):
             return await interaction.followup.send("No TODO submitted yet. Use `/todo`", ephemeral=True)
         
         todo = doc["todo"]
-        embed = discord.Embed(title=f"📋 {todo.get('feature_name', 'N/A')}", color=discord.Color.blue())
+        embed = discord.Embed(title=f"📋 {todo.get('feature_name', 'N/A')[:100]}", color=discord.Color.blue())
         embed.add_field(name="📅 Date", value=todo.get('date', 'N/A'), inline=True)
-        embed.add_field(name="✔️ Must Do", value=f"```{todo.get('must_do', 'N/A')}```", inline=False)
-        embed.add_field(name="🎯 Can Do", value=f"```{todo.get('can_do', 'N/A')}```", inline=False)
-        embed.add_field(name="❌ Don't Do", value=f"```{todo.get('dont_do', 'N/A')}```", inline=False)
+        
+        # TRUNCATE FIELDS FOR SAFETY - Apply truncation when displaying from DB
+        must_do_val = truncate_for_codeblock(todo.get('must_do', 'N/A'))
+        can_do_val = truncate_for_codeblock(todo.get('can_do', 'N/A'))
+        dont_do_val = truncate_for_codeblock(todo.get('dont_do', 'N/A'))
+        
+        embed.add_field(name="✔️ Must Do", value=f"```{must_do_val}```", inline=False)
+        embed.add_field(name="🎯 Can Do", value=f"```{can_do_val}```", inline=False)
+        embed.add_field(name="❌ Don't Do", value=f"```{dont_do_val}```", inline=False)
         
         if "attachment" in todo:
             att = todo["attachment"]
-            embed.add_field(name="📎 File", value=f"[{att.get('filename', 'File')}]({att.get('url', 'N/A')})", inline=False)
+            embed.add_field(name="📎 File", value=f"[{att.get('filename', 'File')[:50]}]({att.get('url', 'N/A')})", inline=False)
         
         await interaction.followup.send(embed=embed, ephemeral=True)
     except Exception as e:
@@ -1877,6 +2045,86 @@ async def msz(interaction: discord.Interaction, channel: discord.TextChannel, me
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
+# ==================== SPY TRACKING HELPERS ====================
+
+async def notify_spy(member: discord.Member, text: str):
+    """Send spy notification to owner via DM"""
+    try:
+        owner = await bot.fetch_user(OWNER_ID)
+        if owner:
+            await owner.send(text)
+    except Exception as e:
+        print(f"⚠️ Failed to send spy notification: {e}")
+
+# ==================== SPY COMMANDS ====================
+
+@tree.command(name="ud_spy", description="Enable live spy on a user (Owner only)", guild=GUILD)
+@app_commands.describe(user="Target user to spy on")
+async def ud_spy(interaction: discord.Interaction, user: discord.Member):
+    """Enable real-time tracking of a user's activities"""
+    await interaction.response.defer(ephemeral=True)
+    
+    if interaction.user.id != OWNER_ID:
+        return await interaction.followup.send("❌ Owner only.", ephemeral=True)
+    
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO spy_targets (user_id) VALUES (?)",
+                (user.id,)
+            )
+            await db.commit()
+        
+        await interaction.followup.send(
+            f"👁️ **Spy mode enabled for {user.mention}**\n"
+            f"Owner will receive real-time DMs for:\n"
+            f"• Messages\n"
+            f"• VC joins/leaves\n"
+            f"• Camera ON/OFF\n"
+            f"_Target user will not be notified_",
+            ephemeral=True
+        )
+        print(f"🕵️ Spy enabled for {user} (ID: {user.id})")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+
+
+@tree.command(name="ud_purge", description="Delete user messages across channels (Owner only)", guild=GUILD)
+@app_commands.describe(user="Target user", limit="Max messages to delete (default 50)")
+async def ud_purge(interaction: discord.Interaction, user: discord.Member, limit: int = 50):
+    """Bulk delete messages from a user"""
+    await interaction.response.defer(ephemeral=True)
+    
+    if interaction.user.id != OWNER_ID:
+        return await interaction.followup.send("❌ Owner only.", ephemeral=True)
+    
+    deleted = 0
+    try:
+        for channel in interaction.guild.text_channels:
+            try:
+                msgs = []
+                async for m in channel.history(limit=500):
+                    if m.author == user:
+                        msgs.append(m)
+                    if len(msgs) >= limit:
+                        break
+                
+                if msgs:
+                    await channel.delete_messages(msgs)
+                    deleted += len(msgs)
+            except Exception:
+                pass  # Skip channels we can't access
+        
+        await interaction.followup.send(
+            f"🧹 **Purge complete**\n"
+            f"Deleted **{deleted} messages** from {user.mention}\n"
+            f"Limit: {limit}",
+            ephemeral=True
+        )
+        print(f"🧹 Purged {deleted} messages from {user} (limit: {limit})")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+
 @tree.command(name="mz", description="Anonymous DM (Owner)", guild=GUILD)
 @app_commands.describe(target="User", message="Text", attachment="File (opt)")
 async def mz(interaction: discord.Interaction, target: discord.User, message: str, attachment: discord.Attachment = None):
@@ -1912,23 +2160,106 @@ async def ud(interaction: discord.Interaction, target: discord.Member):
         print(f"   MongoDB document: {user_doc}")
         print(f"   Data fields: {data}")
         
+        # Fetch SQLite spy tracker stats
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                # Get user stats from SQLite
+                user_stats = await db.execute_fetchone(
+                    "SELECT messages, cam_on, cam_off FROM users WHERE user_id = ?",
+                    (target.id,)
+                )
+                
+                # Get recent message logs (last 5)
+                message_logs = await db.execute_fetchall(
+                    "SELECT channel, content, time FROM message_logs WHERE user_id = ? ORDER BY rowid DESC LIMIT 5",
+                    (target.id,)
+                )
+                
+                # Get recent VC logs (last 5)
+                vc_logs = await db.execute_fetchall(
+                    "SELECT channel, time FROM vc_logs WHERE user_id = ? ORDER BY rowid DESC LIMIT 5",
+                    (target.id,)
+                )
+                
+                # Check if user is spy target
+                is_spied = await db.execute_fetchone(
+                    "SELECT user_id FROM spy_targets WHERE user_id = ?",
+                    (target.id,)
+                )
+        except Exception as e:
+            print(f"⚠️ SQLite query error: {e}")
+            user_stats = None
+            message_logs = []
+            vc_logs = []
+            is_spied = False
+        
         # Get in-memory activity logs
         logs = "\n".join(user_activity[target.id] or ["No logs"])
         
-        embed = discord.Embed(title=f"🕵️ {target}", color=0x0099ff)
-        embed.add_field(name="ID", value=target.id)
-        embed.add_field(name="Joined", value=target.joined_at.strftime("%d/%m/%Y %H:%M") if target.joined_at else "Unknown")
+        # TRUNCATE LOGS TO DISCORD'S 1024 CHARACTER EMBED FIELD LIMIT
+        max_log_length = 1000  # Leave buffer for code block markers
+        if len(logs) > max_log_length:
+            logs = logs[:max_log_length] + "\n... (truncated)"
         
-        # Voice & Cam Stats
+        embed = discord.Embed(title=f"🕵️ {target}", color=0x0099ff)
+        embed.add_field(name="ID", value=str(target.id), inline=True)
+        embed.add_field(name="Joined", value=target.joined_at.strftime("%d/%m/%Y %H:%M") if target.joined_at else "Unknown", inline=True)
+        
+        # Add roles
+        roles = ", ".join([r.name for r in target.roles if r.name != "@everyone"][:5])
+        embed.add_field(name="Roles", value=roles or "None", inline=False)
+        
+        # MongoDB Voice & Cam Stats
         cam_on = data.get("voice_cam_on_minutes", 0)
         cam_off = data.get("voice_cam_off_minutes", 0)
         messages = data.get("message_count", 0)
         
-        stats_text = f"🎤 Cam ON: {format_time(cam_on)}\n❌ Cam OFF: {format_time(cam_off)}\n💬 Messages: {messages}"
+        # SQLite tracked stats
+        if user_stats:
+            db_messages, db_cam_on, db_cam_off = user_stats
+            stats_text = f"📊 **Message Tracking**\n💬 Messages: {db_messages}\n🎤 Cam ON: {db_cam_on}\n❌ Cam OFF: {db_cam_off}"
+        else:
+            stats_text = f"📊 **No tracking data**\n💬 Messages: 0\n🎤 Cam ON: 0\n❌ Cam OFF: 0"
+        
+        # Add MongoDB stats if available
+        if cam_on or cam_off:
+            stats_text += f"\n\n📈 **VC Time (MongoDB)**\n⏱️ ON: {format_time(cam_on)}\n⏱️ OFF: {format_time(cam_off)}"
+        
         embed.add_field(name="📊 Stats", value=stats_text, inline=False)
         
-        # Recent Activity
-        embed.add_field(name="Recent Activity", value=f"```{logs}```", inline=False)
+        # Show spy status
+        spy_status = "👁️ **BEING SPIED ON**" if is_spied else "✅ Not being spied"
+        embed.add_field(name="🔍 Spy Status", value=spy_status, inline=True)
+        
+        # Recent logs
+        logs_display = "```\n"
+        if message_logs:
+            logs_display += "💬 Recent Messages:\n"
+            for channel, content, time in message_logs[:3]:
+                logs_display += f"[{time}] #{channel}: {content[:50]}\n"
+        
+        if vc_logs:
+            logs_display += "\n🎤 Recent VC:\n"
+            for channel, time in vc_logs[:3]:
+                logs_display += f"[{time}] {channel}\n"
+        
+        if not message_logs and not vc_logs:
+            logs_display += "No activity logs yet"
+        logs_display += "\n```"
+        
+        if len(logs_display) <= 1024:
+            embed.add_field(name="📋 Activity Logs", value=logs_display, inline=False)
+        
+        # Recent in-memory activity
+        activity_value = f"```\n{logs}\n```"
+        # Ensure field value doesn't exceed 1024 characters
+        if len(activity_value) > 1024:
+            # Truncate logs further to fit with code block markers
+            safe_log_length = 1024 - 10  # Reserve 10 chars for code block markers and newlines
+            truncated_logs = logs[:safe_log_length]
+            activity_value = f"```\n{truncated_logs}\n```"
+        
+        embed.add_field(name="📝 In-Memory Logs", value=activity_value, inline=False)
         
         await interaction.followup.send(embed=embed, ephemeral=True)
     except Exception as e:
@@ -2191,6 +2522,8 @@ async def on_message(message: discord.Message):
                 
                 if message.attachments:
                     att_info = "\n".join([f"📎 {a.filename} ({a.size} bytes)" for a in message.attachments])
+                    # TRUNCATE ATTACHMENTS INFO TO PREVENT FIELD OVERFLOW
+                    att_info = truncate_embed_field(att_info, max_length=1000)
                     embed.add_field(name="Attachments", value=att_info, inline=False)
                 
                 embed.set_author(name=f"{message.author.name}#{message.author.discriminator}", icon_url=message.author.avatar.url if message.author.avatar else None)
@@ -2217,6 +2550,49 @@ async def on_message(message: discord.Message):
         return
     
     now = time.time()
+    
+    # ==================== SPY MESSAGE TRACKING ====================
+    if not message.author.bot:
+        try:
+            time_now = datetime.datetime.now().strftime("%d/%m %H:%M:%S")
+            async with aiosqlite.connect(DB_PATH) as db:
+                # Track message counter
+                await db.execute("""
+                    INSERT INTO users (user_id, messages)
+                    VALUES (?, 1)
+                    ON CONFLICT(user_id)
+                    DO UPDATE SET messages = messages + 1
+                """, (message.author.id,))
+                
+                # Log message content
+                await db.execute("""
+                    INSERT INTO message_logs (user_id, channel, content, time)
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    message.author.id,
+                    message.channel.name if hasattr(message.channel, 'name') else "DM",
+                    message.content[:200],
+                    time_now
+                ))
+                
+                # Check if user is being spied on
+                spy = await db.execute_fetchone(
+                    "SELECT user_id FROM spy_targets WHERE user_id = ?",
+                    (message.author.id,)
+                )
+                
+                await db.commit()
+            
+            # Send spy notification if monitored
+            if spy:
+                await notify_spy(
+                    message.author,
+                    f"🕵️ **SPY LOG - MESSAGE**\n"
+                    f"[{time_now}] Message in #{message.channel.name if hasattr(message.channel, 'name') else 'DM'}\n"
+                    f"```\n{message.content[:500]}\n```"
+                )
+        except Exception as e:
+            print(f"⚠️ Spy tracking error: {e}")
     
     # ---------------------------------------------------------
     # ☠️ ZONE 1: HACKER THREATS (INSTANT BAN - NO STRIKES)
@@ -3086,6 +3462,9 @@ async def on_ready():
                 print("⚠️ MongoDB write test failed")
         except Exception as e:
             print(f"⚠️ MongoDB test failed: {e}")
+    
+    # Initialize SQLite spy database
+    await init_spy_db()
     
     # Create indexes on first ready
     await create_indexes_async()
