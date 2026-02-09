@@ -1,6 +1,7 @@
-discord.py
+﻿discord.py
 python-dotenv
 pymongo
 aiohttp
 pytz
-croniteraiosqlite
+croniter
+aiosqlite
