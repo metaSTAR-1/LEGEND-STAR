@@ -3606,7 +3606,11 @@ async def main():
             else:
                 raise
     
-    await bot.start(TOKEN)
+    # Support a dry-run mode for local verification without connecting to Discord
+    if os.getenv("DRY_RUN", "0") == "1":
+        print("⚠️ DRY_RUN enabled - skipping Discord bot startup (bot.start)")
+    else:
+        await bot.start(TOKEN)
 
 if __name__ == "__main__":
     asyncio.run(main())
