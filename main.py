@@ -580,6 +580,7 @@ strike_cache = defaultdict(list)
 join_times = defaultdict(list)
 vc_cache = defaultdict(list)
 last_audit_id = None  # Track last processed audit entry to prevent duplicates
+vc_saving = set()  # guard set to prevent concurrent double-saves for a user
 
 from leaderboard import format_time, get_medal_emoji, generate_leaderboard_text, user_rank
 
@@ -787,26 +788,41 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
     # Save voice time IMMEDIATELY when leaving or changing settings
     if (old_in and not new_in) or (old_in and new_in and (before.channel != after.channel or old_cam != new_cam)):
+        # Prevent concurrent batch save from also saving the same interval
         if member.id in vc_join_times:
-            mins = int((now - vc_join_times[member.id]) // 60)
-            if mins > 0:
-                # Determine the relevant channel for this event (prefer before when leaving)
-                relevant_channel = None
-                if before and before.channel:
-                    relevant_channel = before.channel
-                elif after and after.channel:
-                    relevant_channel = after.channel
+            if member.id in vc_saving:
+                # Another save is in progress for this user; skip to avoid double-count
+                print(f"⏸️ Skipping immediate save for {member.display_name} - concurrent save in progress")
+            else:
+                vc_saving.add(member.id)
+                try:
+                    # Re-read join time (may have been updated by batch save)
+                    join_time = vc_join_times.get(member.id)
+                    if join_time is None:
+                        # nothing to save
+                        pass
+                    else:
+                        mins = int((now - join_time) // 60)
+                        if mins > 0:
+                            # Determine the relevant channel for this event (prefer before when leaving)
+                            relevant_channel = None
+                            if before and before.channel:
+                                relevant_channel = before.channel
+                            elif after and after.channel:
+                                relevant_channel = after.channel
 
-                # Skip recording stats for excluded voice channel
-                if relevant_channel and getattr(relevant_channel, 'id', None) == EXCLUDED_VOICE_CHANNEL_ID:
-                    print(f"⏭️ Skipping cam stat save for excluded channel ({EXCLUDED_VOICE_CHANNEL_ID}) for {member.display_name}")
-                else:
-                    # FIXED: Cam ON = camera is ON (not: camera AND NOT screenshare)
-                    field = "data.voice_cam_on_minutes" if old_cam else "data.voice_cam_off_minutes"
-                    result = save_with_retry(users_coll, {"_id": user_id}, {"$inc": {field: mins}})
-                    cam_status = "🎥 ON" if old_cam else "❌ OFF"
-                    print(f"💾 [{field}] Saved {mins}m for {member.display_name} ({cam_status}) - MongoDB: {result}")
-            del vc_join_times[member.id]
+                            # Skip recording stats for excluded voice channel
+                            if relevant_channel and getattr(relevant_channel, 'id', None) == EXCLUDED_VOICE_CHANNEL_ID:
+                                print(f"⏭️ Skipping cam stat save for excluded channel ({EXCLUDED_VOICE_CHANNEL_ID}) for {member.display_name}")
+                            else:
+                                field = "data.voice_cam_on_minutes" if old_cam else "data.voice_cam_off_minutes"
+                                result = save_with_retry(users_coll, {"_id": user_id}, {"$inc": {field: mins}})
+                                cam_status = "🎥 ON" if old_cam else "❌ OFF"
+                                print(f"💾 [{field}] Saved {mins}m for {member.display_name} ({cam_status}) - MongoDB: {result}")
+                        # Remove tracking entry after handling leave
+                        vc_join_times.pop(member.id, None)
+                finally:
+                    vc_saving.discard(member.id)
 
     # Track when user joins VC
     if new_in:
@@ -967,31 +983,41 @@ async def batch_save_study():
 
                 # Only save 1 minute at a time if less than 1 minute has passed
                 mins_to_save = max(1, mins) if mins > 0 else 1
-                
-                if mins_to_save > 0:
-                    field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
-                    # FIX: Separate operations to avoid MongoDB conflict
-                    # First: Create document if it doesn't exist
-                    users_coll.update_one(
-                        {"_id": str(uid)},
-                        {"$setOnInsert": {
-                            "data": {
-                                "voice_cam_on_minutes": 0,
-                                "voice_cam_off_minutes": 0,
-                                "message_count": 0,
-                                "yesterday": {"cam_on": 0, "cam_off": 0}
-                            }
-                        }},
-                        upsert=True
-                    )
-                    # Then: Increment the field
-                    result = save_with_retry(users_coll, {"_id": str(uid)}, {"$inc": {field: mins_to_save}})
-                    if result:
-                        cam_status = "🎥 ON" if cam else "❌ OFF"
-                        print(f"⏱️ {member.display_name}: +{mins_to_save}m {field} ({cam_status}) ✅")
-                        saved_count += 1
-                    # Reset join time after saving
+
+                # Avoid concurrent saves for same user
+                if uid in vc_saving:
+                    print(f"⏸️ Skipping batch save for {member.display_name} - concurrent save in progress")
                     vc_join_times[uid] = now
+                    processed.add(uid)
+                    continue
+                vc_saving.add(uid)
+                try:
+                    if mins_to_save > 0:
+                        field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
+                        # FIX: Separate operations to avoid MongoDB conflict
+                        # First: Create document if it doesn't exist
+                        users_coll.update_one(
+                            {"_id": str(uid)},
+                            {"$setOnInsert": {
+                                "data": {
+                                    "voice_cam_on_minutes": 0,
+                                    "voice_cam_off_minutes": 0,
+                                    "message_count": 0,
+                                    "yesterday": {"cam_on": 0, "cam_off": 0}
+                                }
+                            }},
+                            upsert=True
+                        )
+                        # Then: Increment the field
+                        result = save_with_retry(users_coll, {"_id": str(uid)}, {"$inc": {field: mins_to_save}})
+                        if result:
+                            cam_status = "🎥 ON" if cam else "❌ OFF"
+                            print(f"⏱️ {member.display_name}: +{mins_to_save}m {field} ({cam_status}) ✅")
+                            saved_count += 1
+                        # Reset join time after saving
+                        vc_join_times[uid] = now
+                finally:
+                    vc_saving.discard(uid)
                 processed.add(uid)
         
         # ✅ SECOND: Also save ALL members currently in any voice channel (fallback tracking)
@@ -1021,28 +1047,36 @@ async def batch_save_study():
                         continue
                     
                     mins_to_save = max(1, mins) if mins > 0 else 1
-                    
-                    if mins_to_save > 0:
-                        field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
-                        # FIX: Separate operations to avoid MongoDB conflict
-                        users_coll.update_one(
-                            {"_id": str(member.id)},
-                            {"$setOnInsert": {
-                                "data": {
-                                    "voice_cam_on_minutes": 0,
-                                    "voice_cam_off_minutes": 0,
-                                    "message_count": 0,
-                                    "yesterday": {"cam_on": 0, "cam_off": 0}
-                                }
-                            }},
-                            upsert=True
-                        )
-                        result = save_with_retry(users_coll, {"_id": str(member.id)}, {"$inc": {field: mins_to_save}})
-                        if result:
-                            cam_status = "🎥 ON" if cam else "❌ OFF"
-                            print(f"⏱️ {member.display_name}: +{mins_to_save}m {field} ({cam_status}) ✅")
-                            saved_count += 1
+
+                    # Avoid concurrent saves for same user
+                    if member.id in vc_saving:
+                        print(f"⏸️ Skipping fallback batch save for {member.display_name} - concurrent save in progress")
+                        continue
+                    vc_saving.add(member.id)
+                    try:
+                        if mins_to_save > 0:
+                            field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
+                            # FIX: Separate operations to avoid MongoDB conflict
+                            users_coll.update_one(
+                                {"_id": str(member.id)},
+                                {"$setOnInsert": {
+                                    "data": {
+                                        "voice_cam_on_minutes": 0,
+                                        "voice_cam_off_minutes": 0,
+                                        "message_count": 0,
+                                        "yesterday": {"cam_on": 0, "cam_off": 0}
+                                    }
+                                }},
+                                upsert=True
+                            )
+                            result = save_with_retry(users_coll, {"_id": str(member.id)}, {"$inc": {field: mins_to_save}})
+                            if result:
+                                cam_status = "🎥 ON" if cam else "❌ OFF"
+                                print(f"⏱️ {member.display_name}: +{mins_to_save}m {field} ({cam_status}) ✅")
+                                saved_count += 1
                         vc_join_times[member.id] = now
+                    finally:
+                        vc_saving.discard(member.id)
         
         # Print consolidated registration message (only ONE message)
         if newly_registered:
