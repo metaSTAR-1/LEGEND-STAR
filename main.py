@@ -837,6 +837,13 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     # - Cam OFF + Screenshare ON = ⚠️ WARNING (need camera even with screenshare)
     # - Cam OFF + Screenshare OFF = ⚠️ WARNING (no camera, no screenshare)
     
+    # Cancel camera timer if user leaves voice channel
+    if not after.channel and member.id in cam_timers:
+        task = cam_timers.pop(member.id, None)
+        if task:
+            task.cancel()
+        print(f"🚪 [{member.display_name}] LEFT VC - Camera timer cancelled")
+    
     channel = after.channel
     if channel and (str(channel.id) in STRICT_CHANNEL_IDS or "Cam On" in channel.name):
         has_cam = after.self_video  # True if camera is on
@@ -861,8 +868,13 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 print(f"⚠️ [{member.display_name}] CAM OFF ({status_text}) - ENFORCEMENT STARTED!")
                 
                 async def enforce():
-                    # 🎯 AGGRESSIVE WARNING - Send immediately (30s delay before enforcement timer)
-                    await asyncio.sleep(30)
+                    try:
+                        # 🎯 AGGRESSIVE WARNING - Send immediately (30s delay before enforcement timer)
+                        await asyncio.sleep(30)
+                    except asyncio.CancelledError:
+                        # User complied before warning was sent
+                        cam_timers.pop(member.id, None)
+                        return
                     
                     try:
                         embed = discord.Embed(
@@ -887,8 +899,13 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                     except Exception as e:
                         print(f"⚠️ Failed to send enforcement warning to {member.display_name}: {e}")
                     
-                    # ⏳ WAIT 3 MINUTES FOR USER TO COMPLY
-                    await asyncio.sleep(180)
+                    try:
+                        # ⏳ WAIT 3 MINUTES FOR USER TO COMPLY
+                        await asyncio.sleep(180)
+                    except asyncio.CancelledError:
+                        # User complied during the 3-minute wait
+                        cam_timers.pop(member.id, None)
+                        return
                     
                     # 🔍 CHECK IF USER COMPLIED
                     if member.voice and member.voice.channel and str(member.voice.channel.id) in STRICT_CHANNEL_IDS:
@@ -923,7 +940,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                                 try:
                                     embed_dm = discord.Embed(
                                         title="📵 You Were Disconnected",
-                                        description=f"You were disconnected from **{channel.name}** due to camera enforcement.\n\nCamera is mandatory in this channel (screenshare alone is not sufficient).\n\nPlease enable your camera before rejoining.",
+                                        description=f"You were disconnected from **{member.voice.channel.name}** due to camera enforcement.\n\nCamera is mandatory in this channel (screenshare alone is not sufficient).\n\nPlease enable your camera before rejoining.",
                                         color=discord.Color.red()
                                     )
                                     await member.send(embed=embed_dm)
