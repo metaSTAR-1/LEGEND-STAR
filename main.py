@@ -574,6 +574,125 @@ GUILD = discord.Object(id=GUILD_ID) if GUILD_ID > 0 else None
 # In-memory
 vc_join_times = {}
 cam_timers = {}
+
+
+async def start_camera_enforcement_for(member: discord.Member, channel: discord.VoiceChannel):
+    """Start the same enforcement flow used for on_voice_state_update for an existing member.
+    This allows enforcement to run for users who were already in VC when the bot started.
+    """
+    member_id = member.id
+    guild_id = member.guild.id
+    channel_id = channel.id if channel else None
+
+    # Avoid duplicate timers
+    if member_id in cam_timers:
+        return
+
+    async def _enforce():
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cam_timers.pop(member_id, None)
+            return
+
+        guild = bot.get_guild(guild_id)
+        if not guild:
+            cam_timers.pop(member_id, None)
+            return
+
+        member_obj = guild.get_member(member_id)
+        try:
+            mention = member_obj.mention if member_obj else f"<@{member_id}>"
+            embed = discord.Embed(
+                title="🎥 ⚠️ CAMERA REQUIRED - FINAL WARNING!",
+                description=f"{mention}\n\n**Please turn on your camera within 3 minutes or you will be disconnected from the voice channel!**",
+                color=discord.Color.red()
+            )
+            embed.add_field(name="⏱️ TIME REMAINING", value="3 minutes to comply or automatic kick", inline=False)
+            embed.add_field(name="✅ ACTION REQUIRED", value="• Turn on your camera\n*(Screenshare alone is not enough - camera is mandatory)*", inline=False)
+            embed.set_footer(text="⚠️ This channel has strict camera enforcement enabled")
+
+            if member_obj:
+                await member_obj.send(embed=embed)
+                print(f"📢 [{member_obj.display_name}] 🎥 CAM WARNING SENT (startup) - Countdown: 3 MINUTES TO COMPLY OR KICK")
+            else:
+                print(f"📢 [ID:{member_id}] 🎥 CAM WARNING (startup) attempted")
+        except Exception as e:
+            print(f"⚠️ Failed to send startup enforcement warning to ID {member_id}: {e}")
+
+        try:
+            await asyncio.sleep(180)
+        except asyncio.CancelledError:
+            cam_timers.pop(member_id, None)
+            return
+
+        # Re-fetch member state
+        member_ref = guild.get_member(member_id)
+        if not member_ref or not member_ref.voice or not member_ref.voice.channel:
+            cam_timers.pop(member_id, None)
+            return
+
+        current_cam = member_ref.voice.self_video
+        voice_chan = member_ref.voice.channel
+        if current_cam:
+            print(f"✅ [{member_ref.display_name}] (startup) COMPLIED IN TIME - CAM ON detected")
+            cam_timers.pop(member_id, None)
+            return
+
+        # Permission/role checks
+        bot_member = guild.get_member(bot.user.id)
+        if bot_member and voice_chan:
+            perms = voice_chan.permissions_for(bot_member)
+            if not perms.move_members and not perms.administrator:
+                print(f"❌ [ID:{member_id}] BOT LACKS MOVE_MEMBERS permission in {voice_chan.name} (startup)")
+                cam_timers.pop(member_id, None)
+                return
+            if member_ref.top_role.position >= bot_member.top_role.position and not perms.administrator:
+                print(f"❌ [ID:{member_id}] Role hierarchy prevents disconnect (member >= bot) (startup)")
+                cam_timers.pop(member_id, None)
+                return
+
+        # Attempt disconnect
+        try:
+            await member_ref.move_to(None, reason="Camera enforcement (startup)")
+        except Exception as e:
+            print(f"❌ Failed move_to for ID {member_id} (startup): {e}")
+            cam_timers.pop(member_id, None)
+            return
+
+        # verify
+        await asyncio.sleep(2)
+        member_ref = guild.get_member(member_id) or member_ref
+        if member_ref.voice and member_ref.voice.channel:
+            print(f"❌ [ID:{member_id}] STILL IN VOICE CHANNEL after move_to (startup)")
+            cam_timers.pop(member_id, None)
+            return
+
+        print(f"✅ [ID:{member_id}] Confirmed disconnected (startup)")
+        # Notify channel and DM
+        try:
+            embed_kick = discord.Embed(title="🚪 User Disconnected",
+                                       description=f"{member_ref.mention} has been automatically disconnected for not enabling their camera.",
+                                       color=discord.Color.orange())
+            embed_kick.set_footer(text="Camera enforcement in strict channels")
+            target_chan = voice_chan
+            if target_chan:
+                await target_chan.send(embed=embed_kick, delete_after=15)
+        except Exception as e:
+            print(f"⚠️ Failed to send startup channel notification: {e}")
+
+        try:
+            embed_dm = discord.Embed(title="📵 You Were Disconnected",
+                                     description=f"You were disconnected from **{voice_chan.name if voice_chan else 'the voice channel'}** due to camera enforcement.\n\nCamera is mandatory in this channel (screenshare alone is not sufficient).\n\nPlease enable your camera before rejoining.",
+                                     color=discord.Color.red())
+            if member_ref:
+                await member_ref.send(embed=embed_dm)
+        except Exception as e:
+            print(f"⚠️ Failed to send startup disconnect DM to ID {member_id}: {e}")
+
+        cam_timers.pop(member_id, None)
+
+    cam_timers[member_id] = bot.loop.create_task(_enforce())
 user_activity = defaultdict(list)
 spam_cache = defaultdict(list)
 strike_cache = defaultdict(list)
@@ -867,155 +986,135 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 status_text = "SCREENSHARE ON" if has_screenshare else "NO SCREENSHARE"
                 print(f"⚠️ [{member.display_name}] CAM OFF ({status_text}) - ENFORCEMENT STARTED!")
                 
-                async def enforce():
+                member_id = member.id
+                guild_id = member.guild.id
+                channel_id = channel.id if channel else None
+
+                async def enforce(captured_member_id=member_id, captured_guild_id=guild_id, captured_channel_id=channel_id):
                     try:
-                        # 🎯 AGGRESSIVE WARNING - Send immediately (30s delay before enforcement timer)
                         await asyncio.sleep(30)
                     except asyncio.CancelledError:
-                        # User complied before warning was sent
-                        cam_timers.pop(member.id, None)
+                        cam_timers.pop(captured_member_id, None)
                         return
-                    
+
+                    guild = bot.get_guild(captured_guild_id)
+                    if not guild:
+                        cam_timers.pop(captured_member_id, None)
+                        return
+
+                    member_obj = guild.get_member(captured_member_id)
+                    channel_obj = guild.get_channel(captured_channel_id) if captured_channel_id else None
+
                     try:
+                        mention = member_obj.mention if member_obj else f"<@{captured_member_id}>"
                         embed = discord.Embed(
                             title="🎥 ⚠️ CAMERA REQUIRED - FINAL WARNING!",
-                            description=f"{member.mention}\n\n**Please turn on your camera within 3 minutes or you will be disconnected from the voice channel!**",
+                            description=f"{mention}\n\n**Please turn on your camera within 3 minutes or you will be disconnected from the voice channel!**",
                             color=discord.Color.red()
                         )
-                        embed.add_field(
-                            name="⏱️ TIME REMAINING",
-                            value="3 minutes to comply or automatic kick",
-                            inline=False
-                        )
-                        embed.add_field(
-                            name="✅ ACTION REQUIRED",
-                            value="• Turn on your camera\n*(Screenshare alone is not enough - camera is mandatory)*",
-                            inline=False
-                        )
+                        embed.add_field(name="⏱️ TIME REMAINING", value="3 minutes to comply or automatic kick", inline=False)
+                        embed.add_field(name="✅ ACTION REQUIRED", value="• Turn on your camera\n*(Screenshare alone is not enough - camera is mandatory)*", inline=False)
                         embed.set_footer(text="⚠️ This channel has strict camera enforcement enabled")
-                        
-                        await member.send(embed=embed)
-                        print(f"📢 [{member.display_name}] 🎥 CAM WARNING SENT - Countdown: 3 MINUTES TO COMPLY OR KICK")
+
+                        if member_obj:
+                            await member_obj.send(embed=embed)
+                            print(f"📢 [{member_obj.display_name}] 🎥 CAM WARNING SENT - Countdown: 3 MINUTES TO COMPLY OR KICK")
+                        else:
+                            print(f"📢 [ID:{captured_member_id}] 🎥 CAM WARNING - member not in cache, warning attempted")
                     except Exception as e:
-                        print(f"⚠️ Failed to send enforcement warning to {member.display_name}: {e}")
-                    
+                        print(f"⚠️ Failed to send enforcement warning to ID {captured_member_id}: {e}")
+
                     try:
-                        # ⏳ WAIT 3 MINUTES FOR USER TO COMPLY
                         await asyncio.sleep(180)
                     except asyncio.CancelledError:
-                        # User complied during the 3-minute wait
-                        cam_timers.pop(member.id, None)
+                        cam_timers.pop(captured_member_id, None)
                         return
-                    
-                    # 🔍 CHECK IF USER COMPLIED
-                    print(f"🔍 [{member.display_name}] TIMER EXPIRED - Checking compliance...")
-                    print(f"   Member ID: {member.id}")
-                    print(f"   Guild Owner ID: {member.guild.owner_id}")
-                    print(f"   Voice state: {member.voice}")
-                    if member.voice:
-                        print(f"   Channel: {member.voice.channel}")
-                        if member.voice.channel:
-                            print(f"   Channel ID: {member.voice.channel.id}")
-                            print(f"   Channel name: {member.voice.channel.name}")
-                            print(f"   In STRICT_CHANNEL_IDS: {str(member.voice.channel.id) in STRICT_CHANNEL_IDS}")
-                            print(f"   Has 'Cam On' in name: {'Cam On' in member.voice.channel.name}")
-                            print(f"   Combined condition: {(str(member.voice.channel.id) in STRICT_CHANNEL_IDS or 'Cam On' in member.voice.channel.name)}")
-                    
-                    if member.voice and member.voice.channel and (str(member.voice.channel.id) in STRICT_CHANNEL_IDS or "Cam On" in member.voice.channel.name):
-                        # Refresh member object to ensure we have latest voice state
-                        member = member.guild.get_member(member.id) or member
-                        current_cam = member.voice.self_video if member.voice else False
-                        print(f"   After refresh - Voice: {member.voice}")
-                        print(f"   After refresh - Channel: {member.voice.channel.name if member.voice and member.voice.channel else 'None'}")
-                        print(f"   After refresh - Current camera status: {current_cam}")
-                        
-                        # ✅ USER COMPLIED: Camera is now ON
+
+                    print(f"🔍 [ID:{captured_member_id}] TIMER EXPIRED - Checking compliance...")
+                    member_ref = guild.get_member(captured_member_id)
+                    current_cam = False
+                    voice_chan = None
+                    if member_ref and member_ref.voice and member_ref.voice.channel:
+                        current_cam = member_ref.voice.self_video
+                        voice_chan = member_ref.voice.channel
+                        print(f"   After refresh - Member: {member_ref.display_name}, Channel: {voice_chan.name}, Cam: {current_cam}")
+
+                    if member_ref and voice_chan and (str(voice_chan.id) in STRICT_CHANNEL_IDS or "Cam On" in voice_chan.name):
                         if current_cam:
-                            print(f"✅ [{member.display_name}] COMPLIED IN TIME - CAM ON detected")
-                        
-                        # ❌ USER DIDN'T COMPLY: Camera still OFF - AUTOMATIC DISCONNECT
+                            print(f"✅ [{member_ref.display_name}] COMPLIED IN TIME - CAM ON detected")
                         else:
-                            print(f"🚪 [{member.display_name}] ENFORCEMENT EXECUTED - Disconnecting from VC (Channel: {member.voice.channel.name}) - Camera still OFF after 3 minutes")
-                            
-                            # Check bot permissions before attempting disconnect
-                            bot_member = member.guild.get_member(bot.user.id)
-                            if bot_member:
-                                perms = member.voice.channel.permissions_for(bot_member)
+                            print(f"🚪 [{member_ref.display_name}] ENFORCEMENT EXECUTED - Camera still OFF after 3 minutes")
+
+                            bot_member = guild.get_member(bot.user.id)
+                            if bot_member and voice_chan:
+                                perms = voice_chan.permissions_for(bot_member)
                                 print(f"   Bot permissions in channel: move_members={perms.move_members}, administrator={perms.administrator}")
-                                print(f"   Member top role: {member.top_role.name} (position: {member.top_role.position})")
-                                print(f"   Bot top role: {bot_member.top_role.name} (position: {bot_member.top_role.position})")
-                                
+                                print(f"   Member top role pos: {member_ref.top_role.position}, Bot top role pos: {bot_member.top_role.position}")
+
                                 if not perms.move_members and not perms.administrator:
-                                    print(f"❌ [{member.display_name}] BOT LACKS MOVE_MEMBERS PERMISSION in {member.voice.channel.name}")
+                                    print(f"❌ [ID:{captured_member_id}] BOT LACKS MOVE_MEMBERS permission in {voice_chan.name}")
                                     return
-                                
-                                # Check role hierarchy - bot cannot move members with higher or equal roles
-                                if member.top_role.position >= bot_member.top_role.position and not perms.administrator:
-                                    print(f"❌ [{member.display_name}] CANNOT DISCONNECT - Member role position ({member.top_role.position}) >= Bot role position ({bot_member.top_role.position})")
+                                if member_ref.top_role.position >= bot_member.top_role.position and not perms.administrator:
+                                    print(f"❌ [ID:{captured_member_id}] Role hierarchy prevents disconnect (member >= bot)")
                                     return
-                                
-                                print(f"✅ [{member.display_name}] Bot has permissions and appropriate role hierarchy")
-                            
-                            try:
-                                # Double-check member is still in voice channel before disconnect
-                                if not member.voice or not member.voice.channel:
-                                    print(f"⚠️ [{member.display_name}] No longer in voice channel when timer expired")
-                                    return
-                                
-                                # KICK/DISCONNECT THE USER
-                                print(f"🔄 [{member.display_name}] Attempting to move_to(None)...")
-                                # Get fresh member object
-                                fresh_member = member.guild.get_member(member.id)
-                                if fresh_member:
-                                    member = fresh_member
-                                
-                                await member.move_to(None, reason="Camera enforcement")
-                                print(f"✅ [{member.display_name}] move_to() completed successfully")
-                                
-                                # Verify the disconnect worked - wait a bit and check multiple times
-                                await asyncio.sleep(2)  # Wait 2 seconds for Discord to process
-                                for attempt in range(3):
-                                    member = member.guild.get_member(member.id) or member  # Refresh member
-                                    if not member.voice or not member.voice.channel:
-                                        print(f"✅ [{member.display_name}] Confirmed disconnected from voice channel (attempt {attempt + 1})")
-                                        break
-                                    print(f"⚠️ [{member.display_name}] Still showing in voice channel after move_to (attempt {attempt + 1}) - Channel: {member.voice.channel.name}")
-                                    await asyncio.sleep(1)
-                                else:
-                                    print(f"❌ [{member.display_name}] FAILED TO VERIFY DISCONNECT - Still in channel after 3 checks")
-                                    return  # Don't send DM if disconnect verification failed
-                                
-                                # 📢 NOTIFY CHANNEL ABOUT ENFORCEMENT ACTION
-                                try:
-                                    embed_kick = discord.Embed(
-                                        title="🚪 User Disconnected",
-                                        description=f"{member.mention} has been automatically disconnected for not enabling their camera within the 3-minute time limit.",
-                                        color=discord.Color.orange()
-                                    )
-                                    embed_kick.set_footer(text="Camera enforcement in strict channels")
-                                    await member.voice.channel.send(embed=embed_kick, delete_after=15)
-                                except Exception as e:
-                                    print(f"⚠️ Failed to send channel notification: {e}")
-                                
-                                # 📧 SEND DM TO USER ABOUT ENFORCEMENT
-                                try:
-                                    embed_dm = discord.Embed(
-                                        title="📵 You Were Disconnected",
-                                        description=f"You were disconnected from **{member.voice.channel.name}** due to camera enforcement.\n\nCamera is mandatory in this channel (screenshare alone is not sufficient).\n\nPlease enable your camera before rejoining.",
-                                        color=discord.Color.red()
-                                    )
-                                    await member.send(embed=embed_dm)
-                                    print(f"📧 [{member.display_name}] Sent disconnect DM successfully")
-                                except Exception as e:
-                                    print(f"⚠️ Failed to send disconnect DM to {member.display_name}: {e}")
-                                
-                            except Exception as e:
-                                print(f"❌ CRITICAL: Failed to disconnect {member.display_name}: {e} (Type: {type(e).__name__})")
-                                # Don't send DM if disconnect failed
+                                print(f"✅ [ID:{captured_member_id}] Bot has permissions and role hierarchy allows disconnect")
+
+                            # Double-check member is still in voice channel before disconnect
+                            if not member_ref.voice or not member_ref.voice.channel:
+                                print(f"⚠️ [ID:{captured_member_id}] No longer in voice channel when timer expired")
                                 return
-                    
+
+                            print(f"🔄 [ID:{captured_member_id}] Attempting to move_to(None)...")
+                            try:
+                                await member_ref.move_to(None, reason="Camera enforcement")
+                            except Exception as e:
+                                print(f"❌ Failed move_to for ID {captured_member_id}: {e}")
+                                return
+
+                            # Verify the disconnect worked - retry checks
+                            await asyncio.sleep(2)
+                            verified = False
+                            for attempt in range(3):
+                                member_ref = guild.get_member(captured_member_id) or member_ref
+                                if not member_ref.voice or not member_ref.voice.channel:
+                                    print(f"✅ [ID:{captured_member_id}] Confirmed disconnected (attempt {attempt + 1})")
+                                    verified = True
+                                    break
+                                print(f"⚠️ [ID:{captured_member_id}] Still in channel after move_to (attempt {attempt + 1}) - {member_ref.voice.channel.name}")
+                                await asyncio.sleep(1)
+                            if not verified:
+                                print(f"❌ [ID:{captured_member_id}] FAILED TO VERIFY DISCONNECT - aborting DM/notice")
+                                return
+
+                            # 📢 NOTIFY CHANNEL ABOUT ENFORCEMENT ACTION
+                            try:
+                                embed_kick = discord.Embed(
+                                    title="🚪 User Disconnected",
+                                    description=f"{member_ref.mention} has been automatically disconnected for not enabling their camera within the 3-minute time limit.",
+                                    color=discord.Color.orange()
+                                )
+                                embed_kick.set_footer(text="Camera enforcement in strict channels")
+                                target_chan = voice_chan or channel_obj
+                                if target_chan:
+                                    await target_chan.send(embed=embed_kick, delete_after=15)
+                            except Exception as e:
+                                print(f"⚠️ Failed to send channel notification: {e}")
+
+                            # 📧 SEND DM TO USER ABOUT ENFORCEMENT
+                            try:
+                                embed_dm = discord.Embed(
+                                    title="📵 You Were Disconnected",
+                                    description=f"You were disconnected from **{voice_chan.name if voice_chan else (channel_obj.name if channel_obj else 'the voice channel')}** due to camera enforcement.\n\nCamera is mandatory in this channel (screenshare alone is not sufficient).\n\nPlease enable your camera before rejoining.",
+                                    color=discord.Color.red()
+                                )
+                                if member_ref:
+                                    await member_ref.send(embed=embed_dm)
+                                    print(f"📧 [{member_ref.display_name}] Sent disconnect DM successfully")
+                            except Exception as e:
+                                print(f"⚠️ Failed to send disconnect DM to ID {captured_member_id}: {e}")
+
                     # Clean up timer
-                    cam_timers.pop(member.id, None)
+                    cam_timers.pop(captured_member_id, None)
                 
                 cam_timers[member.id] = bot.loop.create_task(enforce())
 
@@ -3651,6 +3750,29 @@ async def on_ready():
     todo_checker.start()
     clean_webhooks.start()
     monitor_audit.start()
+    
+    # Startup sweep: schedule enforcement for members already in strict camera channels
+    try:
+        if GUILD_ID > 0:
+            guild = bot.get_guild(GUILD_ID)
+            if guild:
+                for cid in STRICT_CHANNEL_IDS:
+                    try:
+                        ch = guild.get_channel(int(cid))
+                        if not ch:
+                            continue
+                        for m in ch.members:
+                            if m.bot:
+                                continue
+                            # if camera off and no timer yet, start enforcement
+                            has_cam = m.voice.self_video if m.voice else False
+                            if not has_cam and m.id not in cam_timers:
+                                print(f"🔎 Scheduling startup enforcement for {m.display_name} in {ch.name}")
+                                await start_camera_enforcement_for(m, ch)
+                    except Exception:
+                        continue
+    except Exception as e:
+        print(f"⚠️ Startup sweep error: {e}")
 
 # Keep-alive
 async def handle(_):
