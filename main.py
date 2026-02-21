@@ -908,7 +908,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                         return
                     
                     # 🔍 CHECK IF USER COMPLIED
-                    if member.voice and member.voice.channel and str(member.voice.channel.id) in STRICT_CHANNEL_IDS:
+                    if member.voice and member.voice.channel and (str(member.voice.channel.id) in STRICT_CHANNEL_IDS or "Cam On" in member.voice.channel.name):
                         current_cam = member.voice.self_video
                         
                         # ✅ USER COMPLIED: Camera is now ON
@@ -917,35 +917,37 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                         
                         # ❌ USER DIDN'T COMPLY: Camera still OFF - AUTOMATIC DISCONNECT
                         else:
-                            print(f"🚪 [{member.display_name}] ENFORCEMENT EXECUTED - Disconnecting from VC (Channel: {member.voice.channel.name})")
+                            print(f"🚪 [{member.display_name}] ENFORCEMENT EXECUTED - Disconnecting from VC (Channel: {member.voice.channel.name}) - Camera still OFF after 3 minutes")
                             
                             try:
                                 # KICK/DISCONNECT THE USER
                                 await member.move_to(None, reason="Enforcement: Camera required within 3-minute deadline")
-                                print(f"✅ [{member.display_name}] SUCCESSFULLY KICKED from voice channel")
+                                print(f"✅ [{member.display_name}] SUCCESSFULLY KICKED from voice channel for camera non-compliance")
                                 
                                 # 📢 NOTIFY CHANNEL ABOUT ENFORCEMENT ACTION
                                 try:
                                     embed_kick = discord.Embed(
                                         title="🚪 User Disconnected",
-                                        description=f"{member.mention} has been automatically disconnected for not enabling their camera.",
+                                        description=f"{member.mention} has been automatically disconnected for not enabling their camera within the 3-minute time limit.",
                                         color=discord.Color.orange()
                                     )
                                     embed_kick.set_footer(text="Camera enforcement in strict channels")
-                                    await channel.send(embed=embed_kick, delete_after=15)
-                                except Exception:
-                                    pass
+                                    await member.voice.channel.send(embed=embed_kick, delete_after=15)
+                                except Exception as e:
+                                    print(f"⚠️ Failed to send channel notification: {e}")
                                 
                                 # 📧 SEND DM TO USER ABOUT ENFORCEMENT
                                 try:
                                     embed_dm = discord.Embed(
-                                        title="📵 You Were Disconnected",
-                                        description=f"You were disconnected from **{member.voice.channel.name}** due to camera enforcement.\n\nCamera is mandatory in this channel (screenshare alone is not sufficient).\n\nPlease enable your camera before rejoining.",
+                                        title="📵 Camera Enforcement - Disconnected",
+                                        description=f"You were automatically disconnected from **{member.voice.channel.name}** because you did not turn on your camera within the 3-minute time limit.\n\n**Camera Policy:**\n• Camera is mandatory in this voice channel\n• Screenshare alone is not sufficient\n• You must enable your camera before rejoining\n\nPlease turn on your camera and rejoin the channel.",
                                         color=discord.Color.red()
                                     )
+                                    embed_dm.set_footer(text="Camera enforcement is active in this server")
                                     await member.send(embed=embed_dm)
-                                except Exception:
-                                    pass
+                                    print(f"📧 [{member.display_name}] Sent disconnect DM successfully")
+                                except Exception as e:
+                                    print(f"⚠️ Failed to send disconnect DM to {member.display_name}: {e}")
                                 
                             except Exception as e:
                                 print(f"⚠️ Failed to disconnect {member.display_name}: {e}")
